@@ -36,7 +36,7 @@ class Carver:
         with open(image_path, 'rb') as f:
             file_id = 0
             carving = False
-            current_file_data = bytearray()
+            current_file_handle = None
             engine = StackEngine()
             active_parser = None
 
@@ -69,7 +69,9 @@ class Carver:
                                 carving = True
                                 active_parser = parser
                                 engine.reset()
-                                current_file_data = bytearray()
+                                ext = ext_map.get(type(active_parser), "bin")
+                                out_path = os.path.join(output_dir, f"carved_{file_id}.{ext}")
+                                current_file_handle = open(out_path, 'wb')
                                 cluster = search_buffer
                                 break
                         if carving:
@@ -113,7 +115,7 @@ class Carver:
                             if not test_engine.is_corrupted and len(candidate_tags) > 0:
                                 print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
                                 engine = test_engine
-                                current_file_data.extend(candidate_cluster)
+                                current_file_handle.write(candidate_cluster)
                                 found_next_part = True
                                 tags = candidate_tags  # Update tags for completion check
                                 break
@@ -125,19 +127,26 @@ class Carver:
                             f.seek(original_pos)
                             carving = False
                             active_parser = None
+                            if current_file_handle:
+                                current_file_handle.close()
+                                current_file_handle = None
+                            file_id += 1
                             continue
                     else:
                         # append valid cluster
-                        current_file_data.extend(cluster)
+                        current_file_handle.write(cluster)
 
                     # check for completion
                     if carving and engine.is_empty() and len(tags) > 0:
                         print(f"[+] Successfully carved file {file_id}!")
-                        ext = ext_map.get(type(active_parser), "bin")
-                        out_path = os.path.join(output_dir, f"carved_{file_id}.{ext}")
-                        with open(out_path, 'wb') as out_f:
-                            out_f.write(current_file_data)
+                        if current_file_handle:
+                            current_file_handle.close()
+                            current_file_handle = None
                         file_id += 1
                         carving = False
                         active_parser = None
                         prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
+
+            # ensure final file handle is closed if the image ends prematurely
+            if current_file_handle and not current_file_handle.closed:
+                current_file_handle.close()
