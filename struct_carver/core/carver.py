@@ -111,8 +111,13 @@ class Carver:
 
                             test_engine.process_tags(candidate_tags)
 
-                            # valid continuation must not corrupt AND must contain structural tags
-                            if not test_engine.is_corrupted and len(candidate_tags) > 0:
+                            # Heuristic: if a cluster lacks tags (e.g., a long paragraph), check if it's mostly valid text.
+                            # strip null padding and ensure the remaining valid decoded UTF-8 characters
+                            # make up a significant portion (e.g., 80%) of the cluster size.
+                            is_text_heavy = len(candidate_text.replace('\x00', '')) >= (self.cluster_size * 0.8)
+
+                            # valid continuation must not corrupt AND (must contain structural tags OR be a valid text block)
+                            if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                                 print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
                                 engine = test_engine
                                 current_file_handle.write(candidate_cluster)
