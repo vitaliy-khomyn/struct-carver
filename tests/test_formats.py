@@ -9,7 +9,7 @@ from struct_carver.formats.rtf_parser import RTFParser
 class TestFormats(unittest.TestCase):
     def test_xml_parser(self):
         parser = XMLParser()
-        data = "<root><node>text</node><empty/></root>"
+        data = "<root><node>text</node><![CDATA[<fake>data</fake>]]><!-- <ignored></ignored> --><empty/></root>"
         tags = parser.extract_tags(data)
         expected = [("root", False), ("node", False), ("node", True), ("root", True)]
         self.assertEqual(tags, expected)
