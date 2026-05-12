@@ -33,7 +33,7 @@ class TestFormats(unittest.TestCase):
 
     def test_json_parser(self):
         parser = JSONParser()
-        data = '{"key": ["value1", "value2"]}'
+        data = '{"k{e}y": ["[\\"escaped\\"]", "value2"]}'
         tags = parser.extract_tags(data)
         expected = [("{", False), ("[", False), ("[", True), ("{", True)]
         self.assertEqual(tags, expected)
