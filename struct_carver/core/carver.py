@@ -49,6 +49,10 @@ class Carver:
                 ZIPParser: "zip"
             }
 
+            max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
+            overlap_size = max(0, max_sig_len - 1)
+            prev_overlap = b""
+
             while True:
                 # 1. read the disk cluster by cluster
                 cluster = f.read(self.cluster_size)
@@ -57,7 +61,8 @@ class Carver:
 
                 if not carving:
                     # 2. search for the beginning of a file
-                    cluster_lower = cluster.lower()
+                    search_buffer = prev_overlap + cluster
+                    cluster_lower = search_buffer.lower()
                     for parser in self.parsers:
                         for sig in parser.header_signatures:
                             if sig in cluster_lower:
@@ -65,9 +70,13 @@ class Carver:
                                 active_parser = parser
                                 engine.reset()
                                 current_file_data = bytearray()
+                                cluster = search_buffer
                                 break
                         if carving:
                             break
+
+                    if not carving:
+                        prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
 
                 if carving:
                     snapshot = engine.clone()
@@ -82,10 +91,10 @@ class Carver:
                     # 4. determine state
                     if engine.is_corrupted:
                         print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
-                        engine = snapshot  # Restore to pre-corruption state
+                        engine = snapshot
 
                         found_next_part = False
-                        max_search_clusters = 1000  # Prevent infinite scanning on large drives
+                        max_search_clusters = 1000
                         search_count = 0
                         original_pos = f.tell()
 
@@ -100,7 +109,7 @@ class Carver:
 
                             test_engine.process_tags(candidate_tags)
 
-                            # Valid continuation must not corrupt AND must contain structural tags
+                            # valid continuation must not corrupt AND must contain structural tags
                             if not test_engine.is_corrupted and len(candidate_tags) > 0:
                                 print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
                                 engine = test_engine
@@ -113,7 +122,7 @@ class Carver:
 
                         if not found_next_part:
                             print(f"  [-] Search failed. Aborting recovery for file {file_id}.")
-                            f.seek(original_pos)  # Rewind to continue normal scanning for other files
+                            f.seek(original_pos)
                             carving = False
                             active_parser = None
                             continue
@@ -131,3 +140,4 @@ class Carver:
                         file_id += 1
                         carving = False
                         active_parser = None
+                        prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
