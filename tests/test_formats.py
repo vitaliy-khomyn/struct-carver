@@ -16,7 +16,7 @@ class TestFormats(unittest.TestCase):
 
     def test_html_parser(self):
         parser = HTMLParser()
-        data = "<html><body><img src='test.jpg'><br><p>text</p></body></html>"
+        data = "<html><body><!-- <div class='fake'> </div> --><img src='test.jpg'><br><p>text</p></body></html>"
         tags = parser.extract_tags(data)
         expected = [("html", False), ("body", False), ("p", False), ("p", True), ("body", True), ("html", True)]
         self.assertEqual(tags, expected)
