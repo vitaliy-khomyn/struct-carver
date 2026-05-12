@@ -4,6 +4,7 @@ from struct_carver.formats.html_parser import HTMLParser
 from struct_carver.formats.pdf_parser import PDFParser
 from struct_carver.formats.json_parser import JSONParser
 from struct_carver.formats.rtf_parser import RTFParser
+from struct_carver.formats.zip_parser import ZIPParser
 
 
 class TestFormats(unittest.TestCase):
@@ -43,4 +44,12 @@ class TestFormats(unittest.TestCase):
         data = r"{\rtf1\ansi{\fonttbl\f0\fswiss Helvetica;}\f0\pard Hello World!}"
         tags = parser.extract_tags(data)
         expected = [("{", False), ("{", False), ("{", True), ("{", True)]
+        self.assertEqual(tags, expected)
+
+    def test_zip_parser(self):
+        parser = ZIPParser()
+        # Simulate ZIP with two local headers and one end of central directory
+        data = "PK\x03\x04_file1_PK\x03\x04_file2_PK\x01\x02_dir_PK\x05\x06_end_"
+        tags = parser.extract_tags(data)
+        expected = [("zip", False), ("zip", True)]
         self.assertEqual(tags, expected)
