@@ -41,14 +41,13 @@ class TestFormats(unittest.TestCase):
 
     def test_rtf_parser(self):
         parser = RTFParser()
-        data = r"{\rtf1\ansi{\fonttbl\f0\fswiss Helvetica;}\f0\pard Hello World!}"
+        data = r"{\rtf1\ansi{\fonttbl\f0\fswiss Helvetica;}\f0\pard Hello \{ World! \}}"
         tags = parser.extract_tags(data)
         expected = [("{", False), ("{", False), ("{", True), ("{", True)]
         self.assertEqual(tags, expected)
 
     def test_zip_parser(self):
         parser = ZIPParser()
-        # Simulate ZIP with two local headers and one end of central directory
         data = "PK\x03\x04_file1_PK\x03\x04_file2_PK\x01\x02_dir_PK\x05\x06_end_"
         tags = parser.extract_tags(data)
         expected = [("zip", False), ("zip", True)]
