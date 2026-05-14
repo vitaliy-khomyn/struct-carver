@@ -13,6 +13,16 @@ class HTMLParser(BaseFormatParser):
             b'link', b'meta', b'param', b'source', b'track', b'wbr', b'!doctype'
         }
 
+        self.in_comment = False
+
+    def clone(self) -> 'HTMLParser':
+        new_parser = HTMLParser()
+        new_parser.in_comment = self.in_comment
+        return new_parser
+
+    def reset(self):
+        self.in_comment = False
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'<html', b'<!doctype html']
@@ -23,16 +33,15 @@ class HTMLParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
-        in_comment = False
         i = 0
         last_offset = 0
         n = len(data)
 
         while i < n:
-            if in_comment:
+            if self.in_comment:
                 end_comment = data.find(b'-->', i)
                 if end_comment != -1:
-                    in_comment = False
+                    self.in_comment = False
                     i = end_comment + 3
                 else:
                     break
@@ -44,7 +53,7 @@ class HTMLParser(BaseFormatParser):
                     break
 
                 if next_comment != -1 and next_comment <= next_tag:
-                    in_comment = True
+                    self.in_comment = True
                     i = next_comment + 4
                 else:
                     end_tag = data.find(b'>', next_tag)

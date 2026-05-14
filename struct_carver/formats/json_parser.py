@@ -14,6 +14,19 @@ class JSONParser(BaseFormatParser):
             b']': ('[', True)
         }
 
+        self.in_string = False
+        self.escape_next = False
+
+    def clone(self) -> 'JSONParser':
+        new_parser = JSONParser()
+        new_parser.in_string = self.in_string
+        new_parser.escape_next = self.escape_next
+        return new_parser
+
+    def reset(self):
+        self.in_string = False
+        self.escape_next = False
+
     @property
     def header_signatures(self) -> List[bytes]:
         # Simple heuristic headers for JSON objects or arrays
@@ -25,21 +38,19 @@ class JSONParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
-        in_string = False
-        escape_next = False
         last_offset = 0
 
         for i, byte_val in enumerate(data):
-            if in_string:
-                if escape_next:
-                    escape_next = False
+            if self.in_string:
+                if self.escape_next:
+                    self.escape_next = False
                 elif byte_val == ord('\\'):
-                    escape_next = True
+                    self.escape_next = True
                 elif byte_val == ord('"'):
-                    in_string = False
+                    self.in_string = False
             else:
                 if byte_val == ord('"'):
-                    in_string = True
+                    self.in_string = True
                 elif byte_val == ord('{'):
                     tags.append(('{', False))
                     last_offset = i + 1

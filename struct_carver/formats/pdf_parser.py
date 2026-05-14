@@ -10,6 +10,14 @@ class PDFParser(BaseFormatParser):
         self.is_open = False
         self.length_pattern = re.compile(rb'/Length\s+(\d+)')
 
+    def clone(self) -> 'PDFParser':
+        new_parser = PDFParser()
+        new_parser.is_open = self.is_open
+        return new_parser
+
+    def reset(self):
+        self.is_open = False
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'%pdf-']

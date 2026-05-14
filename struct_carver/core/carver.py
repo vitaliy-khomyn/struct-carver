@@ -1,4 +1,5 @@
 import os
+from tqdm import tqdm
 from struct_carver.formats.xml_parser import XMLParser
 from struct_carver.formats.html_parser import HTMLParser
 from struct_carver.formats.pdf_parser import PDFParser
@@ -88,6 +89,7 @@ class Carver:
         for parser in self.parsers:
             for sig in parser.header_signatures:
                 if sig in cluster_lower:
+                    parser.reset()
                     if getattr(parser, 'engine_type', 'semantic') == 'binary':
                         engine = BinaryOffsetEngine()
                     else:
@@ -126,12 +128,12 @@ class Carver:
             bytes_to_advance = last_offset - len(text_overlap)
             return tags, held_back_bytes, bytes_to_advance
 
-    def _attempt_gap_jump(self, f, snapshot, parser, file_id: int, current_text_overlap: bytes):
-        print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
+    def _attempt_gap_jump(self, f, snapshot, parser_snapshot, file_id: int, current_text_overlap: bytes):
+        tqdm.write(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
         max_search_clusters = 1000
         search_count = 0
         original_pos = f.tell()
-        is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
+        is_binary = getattr(parser_snapshot, 'engine_type', 'semantic') == 'binary'
 
         while search_count < max_search_clusters:
             candidate_cluster = f.read(self.cluster_size)
@@ -139,19 +141,20 @@ class Carver:
                 break
 
             test_engine = snapshot.clone()
-            candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, parser, test_engine, current_text_overlap)
+            test_parser = parser_snapshot.clone()
+            candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
 
             is_text_heavy = False
             if not is_binary:
                 is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * 0.8)
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
-                print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
-                return True, test_engine, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster
+                tqdm.write(f"  [+] Found valid continuation after {search_count + 1} clusters!")
+                return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster
 
             search_count += 1
 
-        print(f"  [-] Search failed. Aborting recovery for file {file_id}.")
+        tqdm.write(f"  [-] Search failed. Aborting recovery for file {file_id}.")
         f.seek(original_pos)
         return False, snapshot, [], b"", 0, b""
 
@@ -159,6 +162,7 @@ class Carver:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
+        total_size = os.path.getsize(image_path)
         with BufferedClusterReader(image_path) as f:
             file_id = 0
             carving = False
@@ -171,8 +175,13 @@ class Carver:
             overlap_size = max(0, max_sig_len - 1)
             prev_overlap = b""
 
+            pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc="Carving Progress", leave=True)
             try:
                 while True:
+                    # dynamically update progress bar to current position, supporting gap jump rewinds
+                    pbar.n = f.tell()
+                    pbar.refresh()
+
                     # 1. read the disk cluster by cluster
                     cluster = f.read(self.cluster_size)
                     if not cluster:
@@ -191,16 +200,18 @@ class Carver:
 
                     if carving:
                         snapshot = engine.clone()
+                        parser_snapshot = active_parser.clone()
                         tags, carve_text_overlap, bytes_to_advance = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
 
                         cluster_to_write = cluster
                         # 4. determine state
                         if engine.is_corrupted:
-                            found, new_engine, tags, new_overlap, bytes_to_advance, candidate_cluster = self._attempt_gap_jump(
-                                f, snapshot, active_parser, file_id, carve_text_overlap
+                            found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster = self._attempt_gap_jump(
+                                f, snapshot, parser_snapshot, file_id, carve_text_overlap
                             )
                             if found:
                                 engine = new_engine
+                                active_parser = new_parser
                                 carve_text_overlap = new_overlap
                                 cluster_to_write = candidate_cluster
                             else:
@@ -214,7 +225,7 @@ class Carver:
 
                         # check for completion
                         if carving and engine.is_empty() and len(tags) > 0:
-                            print(f"[+] Successfully carved file {file_id}!")
+                            tqdm.write(f"[+] Successfully carved file {file_id}!")
                             write_len = max(0, bytes_to_advance)
                             current_file_handle.write(cluster_to_write[:write_len])
                             if current_file_handle:
@@ -227,6 +238,7 @@ class Carver:
                         else:
                             current_file_handle.write(cluster_to_write)
             finally:
+                pbar.close()
                 # ensure final file handle is closed if the image ends prematurely or an exception occurs
                 if current_file_handle and not current_file_handle.closed:
                     current_file_handle.close()

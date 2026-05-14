@@ -16,6 +16,14 @@ class ZIPParser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
 
+    def clone(self) -> 'ZIPParser':
+        new_parser = ZIPParser()
+        new_parser.is_open = self.is_open
+        return new_parser
+
+    def reset(self):
+        self.is_open = False
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'PK\x03\x04']

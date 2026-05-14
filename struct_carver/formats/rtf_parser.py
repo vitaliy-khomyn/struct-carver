@@ -3,6 +3,17 @@ from .base import BaseFormatParser
 
 
 class RTFParser(BaseFormatParser):
+    def __init__(self):
+        self.escape = False
+
+    def clone(self) -> 'RTFParser':
+        new_parser = RTFParser()
+        new_parser.escape = self.escape
+        return new_parser
+
+    def reset(self):
+        self.escape = False
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'{\\rtf1']
@@ -13,14 +24,13 @@ class RTFParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
-        escape = False
         last_offset = 0
         for i, byte_val in enumerate(data):
-            if escape:
-                escape = False
+            if self.escape:
+                self.escape = False
                 continue
             if byte_val == ord('\\'):
-                escape = True
+                self.escape = True
             elif byte_val == ord('{'):
                 tags.append(('{', False))
                 last_offset = i + 1
