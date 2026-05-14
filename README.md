@@ -8,15 +8,18 @@ Unlike traditional file carvers that rely strictly on sequential header-to-foote
 
 When a file system deletes a file, its data clusters become unallocated. Over time, these clusters get overwritten, leading to fragmentation. If a new file is written into these fragmented gaps, its data blocks are stored non-sequentially. Standard carving tools fail in these scenarios because they expect a file's data to follow linearly after its header.
 
-## Solution (The MVP)
+## Solution (Dual-Engine Architecture)
 
-For now, StructCarver focuses on **structured text formats** such as `HTML`, `XML`, and `JSON`. 
+StructCarver employs a **Dual-Engine Architecture** to handle both textual formats (`HTML`, `XML`, `JSON`) and binary hierarchical formats (`ZIP`, `PDF`).
 
-By leveraging the hierarchical, tag-based nature of these formats, StructCarver employs a **Stack-Matching Engine**:
+### 1. Semantic Stack Engine (Text)
 1. **Header Identification:** The carver finds an opening signature (e.g., `<?xml` or `<html>`).
 2. **Stack Tracking:** As it reads the data cluster, it pushes opening tags (e.g., `<div>`, `<user>`) to a stack and pops them when encountering closing tags.
-3. **Cluster Boundary Resolution:** When the carver reaches the end of a physical disk cluster and the stack is not empty, it knows the file is incomplete.
+3. **Cluster Boundary Resolution:** When the carver reaches the end of a physical disk cluster and the stack is not empty, the file is incomplete.
 4. **Heuristic Search:** Instead of blindly appending the next sequential cluster (which might belong to a different file), StructCarver scans unallocated space for a cluster that logically resolves the current stack state, stitching non-contiguous segments back together.
+
+### 2. Binary Offset Engine (Binary)
+Unlike text files, binary formats rely on byte offsets, lengths, and embedded signatures (e.g., `PK\x03\x04` for ZIP Local File Headers). The Binary Engine operates exclusively on raw bytes, validating chunk offsets and signature sequences to safely gap-jump over corrupted binary space without destructive string decoding.
 
 ## Features
 
@@ -51,8 +54,8 @@ Run StructCarve against a raw disk image (`.dd`, `.raw`, `.img`):
 ## Roadmap
 
 - [x] **Phase 1:** Stack-matching engine for text-based hierarchical formats (`XML`, `HTML`).
-- [ ] **Phase 2:** Support for JSON (tracking nested braces `{}` and brackets `[]`).
-- [ ] **Phase 3:** Advanced heuristics for non-sequential binary formats (e.g., `ZIP`, `DOCX`, which contain internal chunk offsets).
+- [x] **Phase 2:** Support for JSON and RTF with string-escape state machines.
+- [x] **Phase 3:** Dual-Engine fork: `BinaryOffsetEngine` for non-sequential binary formats (e.g., `ZIP`, `PDF`).
 - [ ] **Phase 4:** Multi-threading and performance optimization for large disk images.
 - [ ] **Phase 5:** Integration with popular forensic frameworks.
 - [ ] **Phase 6:** Minimal GUI for ease of use (very low priority).

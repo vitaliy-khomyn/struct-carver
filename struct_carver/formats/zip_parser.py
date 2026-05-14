@@ -10,8 +10,11 @@ class ZIPParser(BaseFormatParser):
     state and only pushes an opening tag on the first Local File Header,
     and closes it when it encounters the End of Central Directory ('PK\\x05\\x06').
     """
+    engine_type = "binary"
+
     def __init__(self):
         self.is_open = False
+        self.found_central_dir = False
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -21,26 +24,21 @@ class ZIPParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'PK\x05\x06']
 
-    def extract_tags(self, data: str) -> List[Tuple[str, bool]]:
-        tags = []
-        i = 0
-        n = len(data)
-
-        while i < n:
-            next_start = data.find('PK\x03\x04', i)
-            next_end = data.find('PK\x05\x06', i)
-
-            if next_start != -1 and (next_end == -1 or next_start < next_end):
-                if not self.is_open:
-                    tags.append(('zip', False))
-                    self.is_open = True
-                i = next_start + 4
-            elif next_end != -1:
-                if self.is_open:
-                    tags.append(('zip', True))
-                    self.is_open = False
-                i = next_end + 4
+    def analyze_binary(self, data: bytes) -> Tuple[bool, bool, int]:
+        if not self.is_open:
+            if b'PK\x03\x04' in data:
+                self.is_open = True
             else:
-                break
+                # if not opened and no header found in the first chunk, corrupt
+                return True, False, 0
 
-        return tags
+        if b'PK\x05\x06' in data:
+            self.found_central_dir = True
+
+        if self.found_central_dir:
+            end_idx = data.find(b'PK\x05\x06')
+            if end_idx != -1 and len(data) >= end_idx + 22:
+                # 22 bytes is the minimum size of the End of Central Directory record
+                return False, True, end_idx + 22
+
+        return False, False, len(data)

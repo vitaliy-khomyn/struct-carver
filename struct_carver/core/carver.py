@@ -6,6 +6,7 @@ from struct_carver.formats.json_parser import JSONParser
 from struct_carver.formats.rtf_parser import RTFParser
 from struct_carver.formats.zip_parser import ZIPParser
 from struct_carver.core.stack_engine import StackEngine
+from struct_carver.core.binary_engine import BinaryOffsetEngine
 
 
 class Carver:
@@ -29,6 +30,75 @@ class Carver:
         if 'zip' in formats:
             self.parsers.append(ZIPParser())
 
+        self.ext_map = {
+            XMLParser: "xml",
+            HTMLParser: "html",
+            PDFParser: "pdf",
+            JSONParser: "json",
+            RTFParser: "rtf",
+            ZIPParser: "zip"
+        }
+
+    def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str):
+        search_buffer = prev_overlap + cluster
+        cluster_lower = search_buffer.lower()
+        for parser in self.parsers:
+            for sig in parser.header_signatures:
+                if sig in cluster_lower:
+                    if getattr(parser, 'engine_type', 'semantic') == 'binary':
+                        engine = BinaryOffsetEngine()
+                    else:
+                        engine = StackEngine()
+
+                    ext = self.ext_map.get(type(parser), "bin")
+                    out_path = os.path.join(output_dir, f"carved_{file_id}.{ext}")
+                    handle = open(out_path, 'wb')
+                    return True, parser, engine, handle, search_buffer
+        return False, None, None, None, cluster
+
+    def _process_cluster(self, cluster: bytes, parser, engine):
+        is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
+        if is_binary:
+            is_corr, is_comp, _ = parser.analyze_binary(cluster)
+            engine.process_binary(is_corr, is_comp)
+            return ["binary_chunk"]
+        else:
+            text_data = cluster.decode('utf-8', errors='ignore')
+            tags = parser.extract_tags(text_data)
+            engine.process_tags(tags)
+            return tags
+
+    def _attempt_gap_jump(self, f, snapshot, parser, file_handle, file_id: int):
+        print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
+        max_search_clusters = 1000
+        search_count = 0
+        original_pos = f.tell()
+        is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
+
+        while search_count < max_search_clusters:
+            candidate_cluster = f.read(self.cluster_size)
+            if not candidate_cluster:
+                break
+
+            test_engine = snapshot.clone()
+            candidate_tags = self._process_cluster(candidate_cluster, parser, test_engine)
+
+            is_text_heavy = False
+            if not is_binary:
+                candidate_text = candidate_cluster.decode('utf-8', errors='ignore')
+                is_text_heavy = len(candidate_text.replace('\x00', '')) >= (self.cluster_size * 0.8)
+
+            if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
+                print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
+                file_handle.write(candidate_cluster)
+                return True, test_engine, candidate_tags
+
+            search_count += 1
+
+        print(f"  [-] Search failed. Aborting recovery for file {file_id}.")
+        f.seek(original_pos)
+        return False, snapshot, []
+
     def carve(self, image_path: str, output_dir: str):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -37,17 +107,8 @@ class Carver:
             file_id = 0
             carving = False
             current_file_handle = None
-            engine = StackEngine()
+            engine = None
             active_parser = None
-
-            ext_map = {
-                XMLParser: "xml",
-                HTMLParser: "html",
-                PDFParser: "pdf",
-                JSONParser: "json",
-                RTFParser: "rtf",
-                ZIPParser: "zip"
-            }
 
             max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
             overlap_size = max(0, max_sig_len - 1)
@@ -61,75 +122,26 @@ class Carver:
 
                 if not carving:
                     # 2. search for the beginning of a file
-                    search_buffer = prev_overlap + cluster
-                    cluster_lower = search_buffer.lower()
-                    for parser in self.parsers:
-                        for sig in parser.header_signatures:
-                            if sig in cluster_lower:
-                                carving = True
-                                active_parser = parser
-                                engine.reset()
-                                ext = ext_map.get(type(active_parser), "bin")
-                                out_path = os.path.join(output_dir, f"carved_{file_id}.{ext}")
-                                current_file_handle = open(out_path, 'wb')
-                                cluster = search_buffer
-                                break
-                        if carving:
-                            break
-
-                    if not carving:
+                    carving, active_parser, engine, current_file_handle, search_buffer = self._detect_header(
+                        cluster, prev_overlap, file_id, output_dir
+                    )
+                    if carving:
+                        cluster = search_buffer
+                    else:
                         prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
 
                 if carving:
                     snapshot = engine.clone()
-
-                    # decode bytes to string (ignore binary garbage)
-                    text_data = cluster.decode('utf-8', errors='ignore')
-                    tags = active_parser.extract_tags(text_data)
-
-                    # 3. process the semantic structure
-                    engine.process_tags(tags)
+                    tags = self._process_cluster(cluster, active_parser, engine)
 
                     # 4. determine state
                     if engine.is_corrupted:
-                        print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
-                        engine = snapshot
-
-                        found_next_part = False
-                        max_search_clusters = 1000
-                        search_count = 0
-                        original_pos = f.tell()
-
-                        while search_count < max_search_clusters:
-                            candidate_cluster = f.read(self.cluster_size)
-                            if not candidate_cluster:
-                                break
-
-                            test_engine = engine.clone()
-                            candidate_text = candidate_cluster.decode('utf-8', errors='ignore')
-                            candidate_tags = active_parser.extract_tags(candidate_text)
-
-                            test_engine.process_tags(candidate_tags)
-
-                            # Heuristic: if a cluster lacks tags (e.g., a long paragraph), check if it's mostly valid text.
-                            # strip null padding and ensure the remaining valid decoded UTF-8 characters
-                            # make up a significant portion (e.g., 80%) of the cluster size.
-                            is_text_heavy = len(candidate_text.replace('\x00', '')) >= (self.cluster_size * 0.8)
-
-                            # valid continuation must not corrupt AND (must contain structural tags OR be a valid text block)
-                            if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
-                                print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
-                                engine = test_engine
-                                current_file_handle.write(candidate_cluster)
-                                found_next_part = True
-                                tags = candidate_tags  # Update tags for completion check
-                                break
-
-                            search_count += 1
-
-                        if not found_next_part:
-                            print(f"  [-] Search failed. Aborting recovery for file {file_id}.")
-                            f.seek(original_pos)
+                        found, new_engine, tags = self._attempt_gap_jump(
+                            f, snapshot, active_parser, current_file_handle, file_id
+                        )
+                        if found:
+                            engine = new_engine
+                        else:
                             carving = False
                             active_parser = None
                             if current_file_handle:

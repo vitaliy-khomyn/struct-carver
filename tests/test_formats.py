@@ -24,13 +24,10 @@ class TestFormats(unittest.TestCase):
 
     def test_pdf_parser(self):
         parser = PDFParser()
-        data = "1 0 obj << /Type /Catalog >> endobj stream data endstream [ ]"
-        tags = parser.extract_tags(data)
-        expected = [
-            ("obj", False), ("<<", False), ("<<", True), ("obj", True),
-            ("stream", False), ("stream", True), ("[", False), ("[", True)
-        ]
-        self.assertEqual(tags, expected)
+        data = b"%pdf-1.4\n1 0 obj << /Type /Catalog >> endobj stream data endstream [ ] %%eof"
+        is_corrupted, is_complete, _ = parser.analyze_binary(data)
+        self.assertFalse(is_corrupted)
+        self.assertTrue(is_complete)
 
     def test_json_parser(self):
         parser = JSONParser()
@@ -48,7 +45,7 @@ class TestFormats(unittest.TestCase):
 
     def test_zip_parser(self):
         parser = ZIPParser()
-        data = "PK\x03\x04_file1_PK\x03\x04_file2_PK\x01\x02_dir_PK\x05\x06_end_"
-        tags = parser.extract_tags(data)
-        expected = [("zip", False), ("zip", True)]
-        self.assertEqual(tags, expected)
+        data = b"PK\x03\x04_file1_PK\x03\x04_file2_PK\x01\x02_dir_PK\x05\x06" + (b"A" * 22)
+        is_corrupted, is_complete, _ = parser.analyze_binary(data)
+        self.assertFalse(is_corrupted)
+        self.assertTrue(is_complete)
