@@ -62,30 +62,25 @@ class Carver:
         self.cluster_size = cluster_size
         self.parsers = []
 
-        if formats is None:
-            formats = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip']
-
-        if 'xml' in formats:
-            self.parsers.append(XMLParser())
-        if 'html' in formats:
-            self.parsers.append(HTMLParser())
-        if 'pdf' in formats:
-            self.parsers.append(PDFParser())
-        if 'json' in formats:
-            self.parsers.append(JSONParser())
-        if 'rtf' in formats:
-            self.parsers.append(RTFParser())
-        if 'zip' in formats:
-            self.parsers.append(ZIPParser())
-
-        self.ext_map = {
-            XMLParser: "xml",
-            HTMLParser: "html",
-            PDFParser: "pdf",
-            JSONParser: "json",
-            RTFParser: "rtf",
-            ZIPParser: "zip"
+        AVAILABLE_PARSERS = {
+            'xml': XMLParser,
+            'html': HTMLParser,
+            'pdf': PDFParser,
+            'json': JSONParser,
+            'rtf': RTFParser,
+            'zip': ZIPParser
         }
+
+        if formats is None:
+            formats = list(AVAILABLE_PARSERS.keys())
+
+        for fmt in formats:
+            parser_class = AVAILABLE_PARSERS.get(fmt.lower())
+            if parser_class:
+                self.parsers.append(parser_class())
+
+        # dynamically build the reverse lookup map for file extensions
+        self.ext_map = {cls: fmt for fmt, cls in AVAILABLE_PARSERS.items()}
 
     def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str):
         search_buffer = prev_overlap + cluster

@@ -25,9 +25,32 @@ class JSONParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
+        in_string = False
+        escape_next = False
         last_offset = 0
-        for m in self.tag_pattern.finditer(data):
-            if m.group(1) in self.tag_map:
-                tags.append(self.tag_map[m.group(1)])
-                last_offset = m.end()
+
+        for i, byte_val in enumerate(data):
+            if in_string:
+                if escape_next:
+                    escape_next = False
+                elif byte_val == ord('\\'):
+                    escape_next = True
+                elif byte_val == ord('"'):
+                    in_string = False
+            else:
+                if byte_val == ord('"'):
+                    in_string = True
+                elif byte_val == ord('{'):
+                    tags.append(('{', False))
+                    last_offset = i + 1
+                elif byte_val == ord('}'):
+                    tags.append(('{', True))
+                    last_offset = i + 1
+                elif byte_val == ord('['):
+                    tags.append(('[', False))
+                    last_offset = i + 1
+                elif byte_val == ord(']'):
+                    tags.append(('[', True))
+                    last_offset = i + 1
+
         return tags, last_offset

@@ -18,6 +18,9 @@ class PDFParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'%%eof']
 
+    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        return [], 0
+
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         if not self.is_open:
             if b'%pdf-' in data.lower():
@@ -37,11 +40,6 @@ class PDFParser(BaseFormatParser):
         else:
             data_to_parse = data
 
-        end_idx = data.lower().find(b'%%eof')
-        if end_idx != -1:
-            advance = len(data) - len(data_to_parse) + end_idx + 5
-            return False, True, advance, 0
-
         # find streams and calculate future byte offsets
         for match in re.finditer(rb'stream[\r\n]', data_to_parse):
             stream_idx = match.start()
@@ -59,5 +57,11 @@ class PDFParser(BaseFormatParser):
                     after_stream = data_to_parse[stream_start + length_val:]
                     if len(after_stream.lstrip(b'\r\n')) >= 9 and not after_stream.lstrip(b'\r\n').startswith(b'endstream'):
                         return True, False, 0, 0  # inline validation failed
+
+        if bytes_remaining == 0:
+            end_idx = data_to_parse.lower().find(b'%%eof')
+            if end_idx != -1:
+                advance = len(data) - len(data_to_parse) + end_idx + 5
+                return False, True, advance, 0
 
         return False, False, len(data), bytes_remaining

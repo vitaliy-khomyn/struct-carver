@@ -24,6 +24,9 @@ class ZIPParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'PK\x05\x06']
 
+    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        return [], 0
+
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         if not self.is_open:
             start_idx = data.find(b'PK\x03\x04')
@@ -81,9 +84,19 @@ class ZIPParser(BaseFormatParser):
                 if n - next_sig < 30:
                     return False, False, n, 30 - (n - next_sig)
 
+                # check general purpose bit flag (offset 6) for data descriptor presence
+                flags = struct.unpack('<H', data[next_sig+6:next_sig+8])[0]
+                has_data_descriptor = bool(flags & 0x0008)
+
                 # unpack Local File Header lengths to accurately skip compressed data
                 comp_size = struct.unpack('<I', data[next_sig+18:next_sig+22])[0]
                 fn_len, ef_len = struct.unpack('<HH', data[next_sig+26:next_sig+30])
+
+                if has_data_descriptor:
+                    # Size is unknown (0) until the data descriptor block.
+                    # Step over the header block and let the loop scan for the next signature.
+                    idx = next_sig + 30 + fn_len + ef_len
+                    continue
 
                 total_size = 30 + fn_len + ef_len + comp_size
 
