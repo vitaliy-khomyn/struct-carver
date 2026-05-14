@@ -11,17 +11,17 @@ class RTFParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'}']
 
-    def extract_tags(self, data: str) -> List[Tuple[str, bool]]:
+    def extract_tags(self, data: bytes) -> List[Tuple[str, bool]]:
         tags = []
         escape = False
-        for char in data:
+        for byte_val in data:
             if escape:
                 escape = False
                 continue
-            if char == '\\':
+            if byte_val == ord('\\'):
                 escape = True
-            elif char == '{':
+            elif byte_val == ord('{'):
                 tags.append(('{', False))
-            elif char == '}':
+            elif byte_val == ord('}'):
                 tags.append(('{', True))
         return tags

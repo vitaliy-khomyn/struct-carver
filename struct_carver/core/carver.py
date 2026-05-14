@@ -64,24 +64,23 @@ class Carver:
             return ["binary_chunk"], b""
         else:
             search_buffer = text_overlap + cluster
-            text_data = search_buffer.decode('utf-8', errors='ignore')
+            byte_data = search_buffer
 
-            # Smart overlap: Hold back incomplete XML/HTML tags or escape sequences
-            last_open = text_data.rfind('<')
-            last_close = text_data.rfind('>')
+            # overlap: hold back incomplete XML/HTML tags or escape sequences
+            last_open = byte_data.rfind(b'<')
+            last_close = byte_data.rfind(b'>')
 
-            held_back_str = ""
+            held_back_bytes = b""
             if last_open > last_close:
-                held_back_str = text_data[last_open:]
-                text_data = text_data[:last_open]
-            elif text_data.endswith('\\'):
-                held_back_str = text_data[-1:]
-                text_data = text_data[:-1]
+                held_back_bytes = byte_data[last_open:]
+                byte_data = byte_data[:last_open]
+            elif byte_data.endswith(b'\\'):
+                held_back_bytes = byte_data[-1:]
+                byte_data = byte_data[:-1]
 
-            new_overlap = held_back_str.encode('utf-8')
-            tags = parser.extract_tags(text_data)
+            tags = parser.extract_tags(byte_data)
             engine.process_tags(tags)
-            return tags, new_overlap
+            return tags, held_back_bytes
 
     def _attempt_gap_jump(self, f, snapshot, parser, file_handle, file_id: int, current_text_overlap: bytes):
         print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
@@ -100,8 +99,7 @@ class Carver:
 
             is_text_heavy = False
             if not is_binary:
-                candidate_text = candidate_cluster.decode('utf-8', errors='ignore')
-                is_text_heavy = len(candidate_text.replace('\x00', '')) >= (self.cluster_size * 0.8)
+                is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * 0.8)
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                 print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
