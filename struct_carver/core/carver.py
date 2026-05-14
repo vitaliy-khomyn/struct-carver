@@ -56,19 +56,34 @@ class Carver:
                     return True, parser, engine, handle, search_buffer
         return False, None, None, None, cluster
 
-    def _process_cluster(self, cluster: bytes, parser, engine):
+    def _process_cluster(self, cluster: bytes, parser, engine, text_overlap: bytes = b""):
         is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
         if is_binary:
             is_corr, is_comp, _ = parser.analyze_binary(cluster)
             engine.process_binary(is_corr, is_comp)
-            return ["binary_chunk"]
+            return ["binary_chunk"], b""
         else:
-            text_data = cluster.decode('utf-8', errors='ignore')
+            search_buffer = text_overlap + cluster
+            text_data = search_buffer.decode('utf-8', errors='ignore')
+
+            # Smart overlap: Hold back incomplete XML/HTML tags or escape sequences
+            last_open = text_data.rfind('<')
+            last_close = text_data.rfind('>')
+
+            held_back_str = ""
+            if last_open > last_close:
+                held_back_str = text_data[last_open:]
+                text_data = text_data[:last_open]
+            elif text_data.endswith('\\'):
+                held_back_str = text_data[-1:]
+                text_data = text_data[:-1]
+
+            new_overlap = held_back_str.encode('utf-8')
             tags = parser.extract_tags(text_data)
             engine.process_tags(tags)
-            return tags
+            return tags, new_overlap
 
-    def _attempt_gap_jump(self, f, snapshot, parser, file_handle, file_id: int):
+    def _attempt_gap_jump(self, f, snapshot, parser, file_handle, file_id: int, current_text_overlap: bytes):
         print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
         max_search_clusters = 1000
         search_count = 0
@@ -81,7 +96,7 @@ class Carver:
                 break
 
             test_engine = snapshot.clone()
-            candidate_tags = self._process_cluster(candidate_cluster, parser, test_engine)
+            candidate_tags, new_overlap = self._process_cluster(candidate_cluster, parser, test_engine, current_text_overlap)
 
             is_text_heavy = False
             if not is_binary:
@@ -91,13 +106,13 @@ class Carver:
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                 print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
                 file_handle.write(candidate_cluster)
-                return True, test_engine, candidate_tags
+                return True, test_engine, candidate_tags, new_overlap
 
             search_count += 1
 
         print(f"  [-] Search failed. Aborting recovery for file {file_id}.")
         f.seek(original_pos)
-        return False, snapshot, []
+        return False, snapshot, [], b""
 
     def carve(self, image_path: str, output_dir: str):
         if not os.path.exists(output_dir):
@@ -109,6 +124,7 @@ class Carver:
             current_file_handle = None
             engine = None
             active_parser = None
+            carve_text_overlap = b""
 
             max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
             overlap_size = max(0, max_sig_len - 1)
@@ -127,20 +143,22 @@ class Carver:
                     )
                     if carving:
                         cluster = search_buffer
+                        carve_text_overlap = b""
                     else:
                         prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
 
                 if carving:
                     snapshot = engine.clone()
-                    tags = self._process_cluster(cluster, active_parser, engine)
+                    tags, carve_text_overlap = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
 
                     # 4. determine state
                     if engine.is_corrupted:
-                        found, new_engine, tags = self._attempt_gap_jump(
-                            f, snapshot, active_parser, current_file_handle, file_id
+                        found, new_engine, tags, new_overlap = self._attempt_gap_jump(
+                            f, snapshot, active_parser, current_file_handle, file_id, carve_text_overlap
                         )
                         if found:
                             engine = new_engine
+                            carve_text_overlap = new_overlap
                         else:
                             carving = False
                             active_parser = None
