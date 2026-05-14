@@ -24,13 +24,13 @@ class ZIPParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'PK\x05\x06']
 
-    def analyze_binary(self, data: bytes) -> Tuple[bool, bool, int]:
+    def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         if not self.is_open:
             if b'PK\x03\x04' in data:
                 self.is_open = True
             else:
                 # if not opened and no header found in the first chunk, corrupt
-                return True, False, 0
+                return True, False, 0, 0
 
         if b'PK\x05\x06' in data:
             self.found_central_dir = True
@@ -38,7 +38,7 @@ class ZIPParser(BaseFormatParser):
         if self.found_central_dir:
             end_idx = data.find(b'PK\x05\x06')
             if end_idx != -1 and len(data) >= end_idx + 22:
-                # 22 bytes is the minimum size of the End of Central Directory record
-                return False, True, end_idx + 22
+                # 22 bytes is the minimum size of the End of Central Directory
+                return False, True, end_idx + 22, 0
 
-        return False, False, len(data)
+        return False, False, len(data), bytes_remaining

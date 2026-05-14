@@ -107,8 +107,8 @@ class Carver:
     def _process_cluster(self, cluster: bytes, parser, engine, text_overlap: bytes = b""):
         is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
         if is_binary:
-            is_corr, is_comp, bytes_to_advance = parser.analyze_binary(cluster)
-            engine.process_binary(is_corr, is_comp)
+            is_corr, is_comp, bytes_to_advance, expected_remaining = parser.analyze_binary(cluster, engine.bytes_remaining)
+            engine.process_binary(is_corr, is_comp, expected_remaining)
             return ["binary_chunk"], b"", bytes_to_advance
         else:
             search_buffer = text_overlap + cluster

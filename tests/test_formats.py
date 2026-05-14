@@ -25,7 +25,7 @@ class TestFormats(unittest.TestCase):
     def test_pdf_parser(self):
         parser = PDFParser()
         data = b"%pdf-1.4\n1 0 obj << /Type /Catalog >> endobj stream data endstream [ ] %%eof"
-        is_corrupted, is_complete, _ = parser.analyze_binary(data)
+        is_corrupted, is_complete, _, _ = parser.analyze_binary(data)
         self.assertFalse(is_corrupted)
         self.assertTrue(is_complete)
 
@@ -46,6 +46,6 @@ class TestFormats(unittest.TestCase):
     def test_zip_parser(self):
         parser = ZIPParser()
         data = b"PK\x03\x04_file1_PK\x03\x04_file2_PK\x01\x02_dir_PK\x05\x06" + (b"A" * 22)
-        is_corrupted, is_complete, _ = parser.analyze_binary(data)
+        is_corrupted, is_complete, _, _ = parser.analyze_binary(data)
         self.assertFalse(is_corrupted)
         self.assertTrue(is_complete)
