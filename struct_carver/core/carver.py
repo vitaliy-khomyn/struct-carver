@@ -9,6 +9,54 @@ from struct_carver.core.stack_engine import StackEngine
 from struct_carver.core.binary_engine import BinaryOffsetEngine
 
 
+class BufferedClusterReader:
+    """
+    A custom buffered disk reader that pulls large chunks of data into memory to drastically
+    reduce the system call overhead of reading cluster-by-cluster. It seamlessly supports
+    the seek() and tell() methods required for gap-jumping heuristics.
+    """
+    def __init__(self, file_path: str, buffer_size: int = 16 * 1024 * 1024):
+        self.file = open(file_path, 'rb')
+        self.buffer_size = buffer_size
+        self.buffer = memoryview(b"")
+        self.buffer_start_pos = 0
+        self.current_pos = 0
+        self.eof_pos = -1
+
+    def read(self, size: int) -> bytes:
+        if self.eof_pos != -1 and self.current_pos >= self.eof_pos:
+            return b""
+
+        if self.current_pos < self.buffer_start_pos or self.current_pos + size > self.buffer_start_pos + len(self.buffer):
+            self.file.seek(self.current_pos)
+            raw_bytes = self.file.read(max(self.buffer_size, size))
+            if not raw_bytes:
+                self.eof_pos = self.current_pos
+                return b""
+            self.buffer = memoryview(raw_bytes)
+            self.buffer_start_pos = self.current_pos
+
+        offset = self.current_pos - self.buffer_start_pos
+        chunk = self.buffer[offset:offset + size].tobytes()
+        self.current_pos += len(chunk)
+        return chunk
+
+    def seek(self, pos: int):
+        self.current_pos = pos
+
+    def tell(self) -> int:
+        return self.current_pos
+
+    def close(self):
+        self.file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
 class Carver:
     def __init__(self, cluster_size=4096, formats=None):
         self.cluster_size = cluster_size
@@ -116,7 +164,7 @@ class Carver:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        with open(image_path, 'rb') as f:
+        with BufferedClusterReader(image_path) as f:
             file_id = 0
             carving = False
             current_file_handle = None
