@@ -15,6 +15,6 @@ class BaseFormatParser(ABC):
         pass
 
     @abstractmethod
-    def extract_tags(self, data: bytes) -> List[Tuple[str, bool]]:
-        """Returns a list of tuples: (tag_name, is_closing)"""
+    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Returns a tuple: (list of tags, end_offset of the last extracted tag)"""
         pass

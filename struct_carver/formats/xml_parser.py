@@ -15,11 +15,12 @@ class XMLParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'</root>', b'</html>']
 
-    def extract_tags(self, data: bytes) -> List[Tuple[str, bool]]:
+    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
         in_cdata = False
         in_comment = False
         i = 0
+        last_offset = 0
         n = len(data)
 
         while i < n:
@@ -62,7 +63,8 @@ class XMLParser(BaseFormatParser):
 
                         if not (rest.strip().endswith(b'/') or rest.strip().endswith(b'?')):
                             tags.append((tag_name, is_closing))
+                            last_offset = end_tag + 1
 
                     i = end_tag + 1
 
-        return tags
+        return tags, last_offset

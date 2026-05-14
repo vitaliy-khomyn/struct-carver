@@ -9,8 +9,8 @@ class HTMLParser(BaseFormatParser):
 
         # HTML void elements that never have closing tags
         self.void_elements = {
-            'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
-            'link', 'meta', 'param', 'source', 'track', 'wbr', '!doctype'
+            b'area', b'base', b'br', b'col', b'embed', b'hr', b'img', b'input',
+            b'link', b'meta', b'param', b'source', b'track', b'wbr', b'!doctype'
         }
 
     @property
@@ -21,13 +21,15 @@ class HTMLParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'</html>']
 
-    def extract_tags(self, data: bytes) -> List[Tuple[str, bool]]:
+    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
+        last_offset = 0
         for match in self.tag_pattern.finditer(data):
             is_closing = bool(match.group(1))
-            tag_name = match.group(2).decode('ascii', errors='ignore').lower()
+            tag_name = match.group(2).lower()
             rest = match.group(3)
 
             if tag_name not in self.void_elements and not (rest.strip().endswith(b'/') or rest.strip().endswith(b'?')):
-                tags.append((tag_name, is_closing))
-        return tags
+                tags.append((tag_name.decode('ascii', errors='ignore'), is_closing))
+                last_offset = match.end()
+        return tags, last_offset

@@ -23,5 +23,11 @@ class JSONParser(BaseFormatParser):
     def footer_signatures(self) -> List[bytes]:
         return [b'}', b']']
 
-    def extract_tags(self, data: bytes) -> List[Tuple[str, bool]]:
-        return [self.tag_map[m.group(1)] for m in self.tag_pattern.finditer(data) if m.group(1) in self.tag_map]
+    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        tags = []
+        last_offset = 0
+        for m in self.tag_pattern.finditer(data):
+            if m.group(1) in self.tag_map:
+                tags.append(self.tag_map[m.group(1)])
+                last_offset = m.end()
+        return tags, last_offset

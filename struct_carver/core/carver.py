@@ -59,9 +59,9 @@ class Carver:
     def _process_cluster(self, cluster: bytes, parser, engine, text_overlap: bytes = b""):
         is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
         if is_binary:
-            is_corr, is_comp, _ = parser.analyze_binary(cluster)
+            is_corr, is_comp, bytes_to_advance = parser.analyze_binary(cluster)
             engine.process_binary(is_corr, is_comp)
-            return ["binary_chunk"], b""
+            return ["binary_chunk"], b"", bytes_to_advance
         else:
             search_buffer = text_overlap + cluster
             byte_data = search_buffer
@@ -78,11 +78,12 @@ class Carver:
                 held_back_bytes = byte_data[-1:]
                 byte_data = byte_data[:-1]
 
-            tags = parser.extract_tags(byte_data)
+            tags, last_offset = parser.extract_tags(byte_data)
             engine.process_tags(tags)
-            return tags, held_back_bytes
+            bytes_to_advance = last_offset - len(text_overlap)
+            return tags, held_back_bytes, bytes_to_advance
 
-    def _attempt_gap_jump(self, f, snapshot, parser, file_handle, file_id: int, current_text_overlap: bytes):
+    def _attempt_gap_jump(self, f, snapshot, parser, file_id: int, current_text_overlap: bytes):
         print(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
         max_search_clusters = 1000
         search_count = 0
@@ -95,7 +96,7 @@ class Carver:
                 break
 
             test_engine = snapshot.clone()
-            candidate_tags, new_overlap = self._process_cluster(candidate_cluster, parser, test_engine, current_text_overlap)
+            candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, parser, test_engine, current_text_overlap)
 
             is_text_heavy = False
             if not is_binary:
@@ -103,14 +104,13 @@ class Carver:
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                 print(f"  [+] Found valid continuation after {search_count + 1} clusters!")
-                file_handle.write(candidate_cluster)
-                return True, test_engine, candidate_tags, new_overlap
+                return True, test_engine, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster
 
             search_count += 1
 
         print(f"  [-] Search failed. Aborting recovery for file {file_id}.")
         f.seek(original_pos)
-        return False, snapshot, [], b""
+        return False, snapshot, [], b"", 0, b""
 
     def carve(self, image_path: str, output_dir: str):
         if not os.path.exists(output_dir):
@@ -147,16 +147,18 @@ class Carver:
 
                 if carving:
                     snapshot = engine.clone()
-                    tags, carve_text_overlap = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
+                    tags, carve_text_overlap, bytes_to_advance = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
 
+                    cluster_to_write = cluster
                     # 4. determine state
                     if engine.is_corrupted:
-                        found, new_engine, tags, new_overlap = self._attempt_gap_jump(
-                            f, snapshot, active_parser, current_file_handle, file_id, carve_text_overlap
+                        found, new_engine, tags, new_overlap, bytes_to_advance, candidate_cluster = self._attempt_gap_jump(
+                            f, snapshot, active_parser, file_id, carve_text_overlap
                         )
                         if found:
                             engine = new_engine
                             carve_text_overlap = new_overlap
+                            cluster_to_write = candidate_cluster
                         else:
                             carving = False
                             active_parser = None
@@ -165,13 +167,12 @@ class Carver:
                                 current_file_handle = None
                             file_id += 1
                             continue
-                    else:
-                        # append valid cluster
-                        current_file_handle.write(cluster)
 
                     # check for completion
                     if carving and engine.is_empty() and len(tags) > 0:
                         print(f"[+] Successfully carved file {file_id}!")
+                        write_len = max(0, bytes_to_advance)
+                        current_file_handle.write(cluster_to_write[:write_len])
                         if current_file_handle:
                             current_file_handle.close()
                             current_file_handle = None
@@ -179,6 +180,8 @@ class Carver:
                         carving = False
                         active_parser = None
                         prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
+                    else:
+                        current_file_handle.write(cluster_to_write)
 
             # ensure final file handle is closed if the image ends prematurely
             if current_file_handle and not current_file_handle.closed:
