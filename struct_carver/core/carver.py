@@ -1,4 +1,5 @@
 import os
+import json
 from tqdm import tqdm
 from struct_carver.formats.xml_parser import XMLParser
 from struct_carver.formats.html_parser import HTMLParser
@@ -136,7 +137,9 @@ class Carver:
         is_binary = getattr(parser_snapshot, 'engine_type', 'semantic') == 'binary'
 
         while search_count < max_search_clusters:
+            cand_start = f.tell()
             candidate_cluster = f.read(self.cluster_size)
+            cand_end = f.tell()
             if not candidate_cluster:
                 break
 
@@ -150,13 +153,13 @@ class Carver:
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                 tqdm.write(f"  [+] Found valid continuation after {search_count + 1} clusters!")
-                return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster
+                return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end
 
             search_count += 1
 
         tqdm.write(f"  [-] Search failed. Aborting recovery for file {file_id}.")
         f.seek(original_pos)
-        return False, snapshot, [], b"", 0, b""
+        return False, snapshot, parser_snapshot, [], b"", 0, b"", -1, -1
 
     def carve(self, image_path: str, output_dir: str):
         if not os.path.exists(output_dir):
@@ -170,6 +173,7 @@ class Carver:
             engine = None
             active_parser = None
             carve_text_overlap = b""
+            report = {"files": []}
 
             max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
             overlap_size = max(0, max_sig_len - 1)
@@ -183,10 +187,13 @@ class Carver:
                     pbar.refresh()
 
                     # 1. read the disk cluster by cluster
+                    phys_start = f.tell()
                     cluster = f.read(self.cluster_size)
+                    phys_end = f.tell()
                     if not cluster:
                         break
 
+                    just_started = False
                     if not carving:
                         # 2. search for the beginning of a file
                         carving, active_parser, engine, current_file_handle, search_buffer = self._detect_header(
@@ -195,10 +202,24 @@ class Carver:
                         if carving:
                             cluster = search_buffer
                             carve_text_overlap = b""
+
+                            overlap_len = len(search_buffer) - (phys_end - phys_start)
+                            adj_start = phys_start - overlap_len
+                            current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
+                            current_ext = self.ext_map.get(type(active_parser), "bin")
+                            current_filename = f"carved_{file_id}.{current_ext}"
+                            just_started = True
                         else:
                             prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
 
                     if carving:
+                        if not just_started:
+                            if current_fragments[-1]["end_offset"] == phys_start:
+                                current_fragments[-1]["end_offset"] = phys_end
+                                current_fragments[-1]["size"] += (phys_end - phys_start)
+                            else:
+                                current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
+
                         snapshot = engine.clone()
                         parser_snapshot = active_parser.clone()
                         tags, carve_text_overlap, bytes_to_advance = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
@@ -206,7 +227,7 @@ class Carver:
                         cluster_to_write = cluster
                         # 4. determine state
                         if engine.is_corrupted:
-                            found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster = self._attempt_gap_jump(
+                            found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end = self._attempt_gap_jump(
                                 f, snapshot, parser_snapshot, file_id, carve_text_overlap
                             )
                             if found:
@@ -214,12 +235,21 @@ class Carver:
                                 active_parser = new_parser
                                 carve_text_overlap = new_overlap
                                 cluster_to_write = candidate_cluster
+                                current_fragments.append({"start_offset": cand_start, "end_offset": cand_end, "size": cand_end - cand_start})
                             else:
                                 carving = False
                                 active_parser = None
                                 if current_file_handle:
                                     current_file_handle.close()
                                     current_file_handle = None
+                                report["files"].append({
+                                    "file_id": file_id,
+                                    "filename": current_filename,
+                                    "format": current_ext,
+                                    "status": "partial",
+                                    "fragments": current_fragments,
+                                    "total_size": sum(f["size"] for f in current_fragments)
+                                })
                                 file_id += 1
                                 continue
 
@@ -227,10 +257,25 @@ class Carver:
                         if carving and engine.is_empty() and len(tags) > 0:
                             tqdm.write(f"[+] Successfully carved file {file_id}!")
                             write_len = max(0, bytes_to_advance)
+
+                            discarded_bytes = len(cluster_to_write) - write_len
+                            current_fragments[-1]["end_offset"] -= discarded_bytes
+                            current_fragments[-1]["size"] -= discarded_bytes
+
                             current_file_handle.write(cluster_to_write[:write_len])
                             if current_file_handle:
                                 current_file_handle.close()
                                 current_file_handle = None
+
+                            report["files"].append({
+                                "file_id": file_id,
+                                "filename": current_filename,
+                                "format": current_ext,
+                                "status": "complete",
+                                "fragments": current_fragments,
+                                "total_size": sum(f["size"] for f in current_fragments)
+                            })
+
                             file_id += 1
                             carving = False
                             active_parser = None
@@ -242,3 +287,16 @@ class Carver:
                 # ensure final file handle is closed if the image ends prematurely or an exception occurs
                 if current_file_handle and not current_file_handle.closed:
                     current_file_handle.close()
+                    report["files"].append({
+                        "file_id": file_id,
+                        "filename": current_filename,
+                        "format": current_ext,
+                        "status": "incomplete_eof",
+                        "fragments": current_fragments,
+                        "total_size": sum(f["size"] for f in current_fragments)
+                    })
+
+            report_path = os.path.join(output_dir, "carve_report.json")
+            with open(report_path, "w") as f_report:
+                json.dump(report, f_report, indent=4)
+            print(f"[*] Forensic carve report saved to {report_path}")
