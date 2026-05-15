@@ -104,7 +104,7 @@ class Carver:
         # dynamically build the reverse lookup map for file extensions
         self.ext_map = {cls: fmt for fmt, cls in AVAILABLE_PARSERS.items()}
 
-    def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str):
+    def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str, worker_id: int):
         search_buffer = prev_overlap + cluster
         cluster_lower = search_buffer.lower()
         for parser in self.parsers:
@@ -117,7 +117,7 @@ class Carver:
                         engine = StackEngine()
 
                     ext = self.ext_map.get(type(parser), "bin")
-                    out_path = os.path.join(output_dir, f"carved_{file_id}.{ext}")
+                    out_path = os.path.join(output_dir, f"carved_w{worker_id}_{file_id}.{ext}")
                     handle = open(out_path, 'wb')
                     return True, parser, engine, handle, search_buffer
         return False, None, None, None, cluster
@@ -181,12 +181,17 @@ class Carver:
         f.seek(original_pos)
         return False, snapshot, parser_snapshot, [], b"", 0, b"", -1, -1
 
-    def carve(self, image_path: str, output_dir: str):
+    def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: int = None, worker_id: int = 0):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
         total_size = os.path.getsize(image_path)
+        end_boundary = end_offset if end_offset else total_size
+
         with BufferedClusterReader(image_path) as f:
+            if start_offset > 0:
+                f.seek(start_offset)
+
             file_id = 0
             carving = False
             current_file_handle = None
@@ -199,11 +204,14 @@ class Carver:
             overlap_size = max(0, max_sig_len - 1)
             prev_overlap = b""
 
-            pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc="Carving Progress", leave=True)
+            pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id)
             try:
                 while True:
+                    if not carving and f.tell() >= end_boundary:
+                        break
+
                     # dynamically update progress bar to current position, supporting gap jump rewinds
-                    pbar.n = f.tell()
+                    pbar.n = f.tell() - start_offset
                     pbar.refresh()
 
                     # 1. read the disk cluster by cluster
@@ -217,7 +225,7 @@ class Carver:
                     if not carving:
                         # 2. search for the beginning of a file
                         carving, active_parser, engine, current_file_handle, search_buffer = self._detect_header(
-                            cluster, prev_overlap, file_id, output_dir
+                            cluster, prev_overlap, file_id, output_dir, worker_id
                         )
                         if carving:
                             cluster = search_buffer
@@ -227,7 +235,7 @@ class Carver:
                             adj_start = phys_start - overlap_len
                             current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
                             current_ext = self.ext_map.get(type(active_parser), "bin")
-                            current_filename = f"carved_{file_id}.{current_ext}"
+                            current_filename = f"carved_w{worker_id}_{file_id}.{current_ext}"
                             just_started = True
                         else:
                             prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
@@ -327,7 +335,7 @@ class Carver:
                         "total_size": sum(f["size"] for f in current_fragments)
                     })
 
-            report_path = os.path.join(output_dir, "carve_report.json")
+            report_path = os.path.join(output_dir, f"carve_report_w{worker_id}.json")
             with open(report_path, "w") as f_report:
                 json.dump(report, f_report, indent=4)
-            print(f"[*] Forensic carve report saved to {report_path}")
+            tqdm.write(f"[*] Forensic carve report saved to {report_path}")

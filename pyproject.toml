@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "structcarver"
+version = "1.0.0"
+description = "A semantic, non-sequential digital forensics file carver."
+readme = "readme.md"
+requires-python = ">=3.8"
+dependencies = [
+    "tqdm>=4.66.0"
+]
+
+[project.scripts]
+structcarver = "struct_carver.cli:main"

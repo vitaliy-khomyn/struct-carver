@@ -24,7 +24,7 @@ class TestCarverIntegration(unittest.TestCase):
             carver = Carver(cluster_size=cluster_size, formats=['xml'])
             carver.carve(img_path, out_dir)
 
-            carved_files = [f for f in os.listdir(out_dir) if f != "carve_report.json"]
+            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report")]
             self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one file.")
 
             with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
@@ -54,7 +54,7 @@ class TestCarverIntegration(unittest.TestCase):
             carver = Carver(cluster_size=cluster_size, formats=['json'])
             carver.carve(img_path, out_dir)
 
-            carved_files = [f for f in os.listdir(out_dir) if f != "carve_report.json"]
+            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report")]
             self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one JSON file.")
 
             with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
@@ -89,7 +89,7 @@ class TestCarverIntegration(unittest.TestCase):
             carver = Carver(cluster_size=cluster_size, formats=['pdf'])
             carver.carve(img_path, out_dir)
 
-            carved_files = [f for f in os.listdir(out_dir) if f != "carve_report.json"]
+            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report")]
             self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one PDF file.")
 
             with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
@@ -117,7 +117,7 @@ class TestCarverIntegration(unittest.TestCase):
             carver = Carver(cluster_size=cluster_size, formats=['xml'])
             carver.carve(img_path, out_dir)
 
-            report_path = os.path.join(out_dir, "carve_report.json")
+            report_path = os.path.join(out_dir, "carve_report_w0.json")
             self.assertTrue(os.path.exists(report_path), "Carve report JSON was not generated.")
 
             with open(report_path, 'r') as f:

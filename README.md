@@ -56,7 +56,7 @@ Run StructCarve against a raw disk image (`.dd`, `.raw`, `.img`):
 - [x] **Phase 1:** Stack-matching engine for text-based hierarchical formats (`XML`, `HTML`).
 - [x] **Phase 2:** Support for JSON and RTF with string-escape state machines.
 - [x] **Phase 3:** Dual-Engine fork: `BinaryOffsetEngine` for non-sequential binary formats (e.g., `ZIP`, `PDF`).
-- [ ] **Phase 4:** Multi-threading and performance optimization for large disk images.
+- [x] **Phase 4:** Multi-threading and performance optimization for large disk images.
 - [ ] **Phase 5:** Integration with popular forensic frameworks.
 - [ ] **Phase 6:** Minimal GUI for ease of use (very low priority).
 
