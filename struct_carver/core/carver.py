@@ -18,29 +18,48 @@ class BufferedClusterReader:
     reduce the system call overhead of reading cluster-by-cluster. It seamlessly supports
     the seek() and tell() methods required for gap-jumping heuristics.
     """
-    def __init__(self, file_path: str, buffer_size: int = 16 * 1024 * 1024):
+    def __init__(self, file_path: str, buffer_size: int = 16 * 1024 * 1024, lookbehind: int = 4 * 1024 * 1024):
         self.file = open(file_path, 'rb')
         self.buffer_size = buffer_size
         self.buffer = memoryview(b"")
         self.buffer_start_pos = 0
         self.current_pos = 0
         self.eof_pos = -1
+        self.lookbehind = lookbehind
 
     def read(self, size: int) -> bytes:
         if self.eof_pos != -1 and self.current_pos >= self.eof_pos:
             return b""
 
-        if self.current_pos < self.buffer_start_pos or self.current_pos + size > self.buffer_start_pos + len(self.buffer):
-            self.file.seek(self.current_pos)
-            raw_bytes = self.file.read(max(self.buffer_size, size))
-            if not raw_bytes:
+        buffer_end = self.buffer_start_pos + len(self.buffer)
+
+        # if the read falls outside the cached buffer (either rewinding past start or reading past end)
+        if self.current_pos < self.buffer_start_pos or self.current_pos + size > buffer_end:
+            # Smart alignment: load the buffer so that current_pos is near the beginning,
+            # but explicitly preserve a lookbehind window to accommodate f.seek() rewinds.
+            read_start = max(0, self.current_pos - self.lookbehind)
+            read_size = max(self.buffer_size, size + (self.current_pos - read_start))
+
+            self.file.seek(read_start)
+            raw_bytes = self.file.read(read_size)
+
+            # check if the absolute end of the disk image
+            if not raw_bytes and self.current_pos >= read_start + len(raw_bytes):
                 self.eof_pos = self.current_pos
                 return b""
+
             self.buffer = memoryview(raw_bytes)
-            self.buffer_start_pos = self.current_pos
+            self.buffer_start_pos = read_start
+            buffer_end = self.buffer_start_pos + len(self.buffer)
+
+        # handle EOF clipping if the file ends before fulfilling the full requested 'size'
+        available_bytes = min(size, buffer_end - self.current_pos)
+        if available_bytes <= 0:
+            self.eof_pos = self.current_pos
+            return b""
 
         offset = self.current_pos - self.buffer_start_pos
-        chunk = self.buffer[offset:offset + size].tobytes()
+        chunk = self.buffer[offset:offset + available_bytes].tobytes()
         self.current_pos += len(chunk)
         return chunk
 

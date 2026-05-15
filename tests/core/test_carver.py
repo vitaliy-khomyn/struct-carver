@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from struct_carver.core.carver import Carver
@@ -97,3 +98,35 @@ class TestCarverIntegration(unittest.TestCase):
             # Stream should cleanly concatenate the 16 'A's and 4 'C's.
             self.assertIn(b'A'*16 + b'CCCC\nendstream', data, "Binary stream state was lost during gap jump.")
             self.assertNotIn(b'B'*64, data, "Gap jumping failed to exclude corrupt binary cluster.")
+
+    def test_carve_report_generation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            img_path = os.path.join(temp_dir, "evidence_report.dd")
+            out_dir = os.path.join(temp_dir, "recovered_files")
+
+            cluster_size = 64
+            cluster1 = b'<?xml version="1.0"?><root><item>A</item>'.ljust(cluster_size, b'\x00')
+            cluster2 = b'stray text data </div> random noise'.ljust(cluster_size, b'\x00')
+            cluster3 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
+
+            with open(img_path, 'wb') as f:
+                f.write(cluster1)
+                f.write(cluster2)
+                f.write(cluster3)
+
+            carver = Carver(cluster_size=cluster_size, formats=['xml'])
+            carver.carve(img_path, out_dir)
+
+            report_path = os.path.join(out_dir, "carve_report.json")
+            self.assertTrue(os.path.exists(report_path), "Carve report JSON was not generated.")
+
+            with open(report_path, 'r') as f:
+                report = json.load(f)
+
+            self.assertIn("files", report)
+            self.assertEqual(len(report["files"]), 1, "Report should contain exactly one recovered file.")
+
+            file_record = report["files"][0]
+            self.assertEqual(file_record["status"], "complete", "File status should be logged as complete.")
+            self.assertEqual(file_record["fragments"][0]["start_offset"], 0, "First fragment should start at offset 0.")
+            self.assertEqual(file_record["fragments"][1]["start_offset"], 128, "Second fragment should start at offset 128 after gap-jumping.")
