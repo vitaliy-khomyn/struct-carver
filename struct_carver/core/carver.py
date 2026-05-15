@@ -1,5 +1,6 @@
 import os
 import json
+import zipfile
 from tqdm import tqdm
 from struct_carver.formats.xml_parser import XMLParser
 from struct_carver.formats.html_parser import HTMLParser
@@ -275,6 +276,17 @@ class Carver:
                                 "fragments": current_fragments,
                                 "total_size": sum(f["size"] for f in current_fragments)
                             })
+
+                            # Recursive DOCX/XLSX support: Extract completed ZIPs
+                            if current_ext == "zip":
+                                zip_path = os.path.join(output_dir, current_filename)
+                                zip_out_dir = os.path.join(output_dir, f"{current_filename}_extracted")
+                                try:
+                                    with zipfile.ZipFile(zip_path, 'r') as zf:
+                                        zf.extractall(zip_out_dir)
+                                    tqdm.write(f"  [+] Extracted DOCX/XLSX/ZIP contents to {zip_out_dir}")
+                                except Exception as e:
+                                    tqdm.write(f"  [-] Recovered ZIP {current_filename} extraction failed: {e}")
 
                             file_id += 1
                             carving = False
