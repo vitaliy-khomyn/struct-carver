@@ -50,3 +50,27 @@ class TestSQLiteWALParser(unittest.TestCase):
         data = self._build_mock_wal('<', b'\x37\x7f\x06\x82', 4096, 1111, 2222, valid_frame=False)
         is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(data)
         self.assertTrue(is_corrupted, "Parser failed to detect invalid frame salt mismatch.")
+
+    def test_wal_spillover_in_frame_data(self):
+        # Frame data split across chunks
+        data = self._build_mock_wal('<', b'\x37\x7f\x06\x82', 4096, 111, 222)
+
+        # 32 (file header) + 24 (frame header) + 100 (partial data) = 156
+        chunk1 = data[:156]
+
+        is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(chunk1)
+        self.assertFalse(is_corrupted)
+        self.assertFalse(is_complete)
+        self.assertEqual(remaining, 3996)  # 4096 - 100
+
+    def test_wal_spillover_in_frame_header(self):
+        # Frame header split across chunks
+        data = self._build_mock_wal('>', b'\x37\x7f\x06\x83', 1024, 333, 444)
+
+        # 32 (file header) + 10 (partial frame header) = 42
+        chunk1 = data[:42]
+
+        is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(chunk1)
+        self.assertFalse(is_corrupted)
+        self.assertFalse(is_complete)
+        self.assertEqual(remaining, 1038)  # 24 - 10 + 1024

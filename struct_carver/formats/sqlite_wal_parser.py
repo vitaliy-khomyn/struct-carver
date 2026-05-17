@@ -81,7 +81,10 @@ class SQLiteWALParser(BaseFormatParser):
         # continuously validate the frame boundaries using the Salt session IDs
         while idx < n:
             if n - idx < 24:
-                return False, False, n, 24 - (n - idx)
+                # not enough bytes to validate the frame header inline.
+                # safely skip the rest of this frame (header + page_size) to re-align on the next frame.
+                frame_total_size = 24 + self.page_size
+                return False, False, n, frame_total_size - (n - idx)
 
             frame_header = data[idx:idx + 24]
             frame_salt1, frame_salt2 = struct.unpack(f'{self.endian}II', frame_header[8:16])
