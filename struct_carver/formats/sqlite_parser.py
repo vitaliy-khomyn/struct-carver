@@ -59,6 +59,8 @@ class SQLiteParser(BaseFormatParser):
 
                 if bytes_remaining <= 0:
                     return False, True, start_idx + self.total_size, 0
+
+                return False, False, n, bytes_remaining
             else:
                 return True, False, 0, 0
 
