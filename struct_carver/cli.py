@@ -6,7 +6,7 @@ import argparse
 import concurrent.futures
 from struct_carver.core.carver import Carver
 
-SUPPORTED_FORMATS = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip']
+SUPPORTED_FORMATS = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite']
 
 
 def carve_worker(args):

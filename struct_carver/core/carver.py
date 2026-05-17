@@ -8,6 +8,7 @@ from struct_carver.formats.pdf_parser import PDFParser
 from struct_carver.formats.json_parser import JSONParser
 from struct_carver.formats.rtf_parser import RTFParser
 from struct_carver.formats.zip_parser import ZIPParser
+from struct_carver.formats.sqlite_parser import SQLiteParser
 from struct_carver.core.stack_engine import StackEngine
 from struct_carver.core.binary_engine import BinaryOffsetEngine
 
@@ -90,7 +91,8 @@ class Carver:
             'pdf': PDFParser,
             'json': JSONParser,
             'rtf': RTFParser,
-            'zip': ZIPParser
+            'zip': ZIPParser,
+            'sqlite': SQLiteParser
         }
 
         if formats is None:
@@ -270,6 +272,14 @@ class Carver:
                                 if current_file_handle:
                                     current_file_handle.close()
                                     current_file_handle = None
+
+                                    # Rename the file to explicitly mark it as a partial recovery
+                                    old_path = os.path.join(output_dir, current_filename)
+                                    current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
+                                    new_path = os.path.join(output_dir, current_filename)
+                                    if os.path.exists(old_path):
+                                        os.rename(old_path, new_path)
+
                                 report["files"].append({
                                     "file_id": file_id,
                                     "filename": current_filename,
@@ -326,6 +336,13 @@ class Carver:
                 # ensure final file handle is closed if the image ends prematurely or an exception occurs
                 if current_file_handle and not current_file_handle.closed:
                     current_file_handle.close()
+
+                    old_path = os.path.join(output_dir, current_filename)
+                    current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
+                    new_path = os.path.join(output_dir, current_filename)
+                    if os.path.exists(old_path):
+                        os.rename(old_path, new_path)
+
                     report["files"].append({
                         "file_id": file_id,
                         "filename": current_filename,
