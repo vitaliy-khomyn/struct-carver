@@ -9,6 +9,7 @@ from struct_carver.formats.json_parser import JSONParser
 from struct_carver.formats.rtf_parser import RTFParser
 from struct_carver.formats.zip_parser import ZIPParser
 from struct_carver.formats.sqlite_parser import SQLiteParser
+from struct_carver.formats.sqlite_wal_parser import SQLiteWALParser
 from struct_carver.core.stack_engine import StackEngine
 from struct_carver.core.binary_engine import BinaryOffsetEngine
 
@@ -92,7 +93,8 @@ class Carver:
             'json': JSONParser,
             'rtf': RTFParser,
             'zip': ZIPParser,
-            'sqlite': SQLiteParser
+            'sqlite': SQLiteParser,
+            'sqlitewal': SQLiteWALParser
         }
 
         if formats is None:
