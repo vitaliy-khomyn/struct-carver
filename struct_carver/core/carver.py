@@ -1,6 +1,7 @@
 import os
 import json
 import zipfile
+from typing import List, Dict, Tuple, Optional, Any
 from tqdm import tqdm
 from struct_carver.formats.xml_parser import XMLParser
 from struct_carver.formats.html_parser import HTMLParser
@@ -115,7 +116,7 @@ class Carver:
         # dynamically build the reverse lookup map for file extensions
         self.ext_map = {cls: fmt for fmt, cls in AVAILABLE_PARSERS.items()}
 
-    def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str, worker_id: int):
+    def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str, worker_id: int) -> Tuple[bool, Optional[Any], Optional[Any], Optional[Any], bytes]:
         search_buffer = prev_overlap + cluster
         cluster_lower = search_buffer.lower()
         for parser in self.parsers:
@@ -136,7 +137,7 @@ class Carver:
                     return True, parser, engine, handle, search_buffer
         return False, None, None, None, cluster
 
-    def _process_cluster(self, cluster: bytes, parser, engine, text_overlap: bytes = b""):
+    def _process_cluster(self, cluster: bytes, parser: Any, engine: Any, text_overlap: bytes = b"") -> Tuple[List[Any], bytes, int]:
         is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
         if is_binary:
             is_corr, is_comp, bytes_to_advance, expected_remaining = parser.analyze_binary(cluster, engine.bytes_remaining)
@@ -163,7 +164,7 @@ class Carver:
             bytes_to_advance = last_offset - len(text_overlap)
             return tags, held_back_bytes, bytes_to_advance
 
-    def _attempt_gap_jump(self, f, snapshot, parser_snapshot, file_id: int, current_text_overlap: bytes, logger):
+    def _attempt_gap_jump(self, f: Any, snapshot: Any, parser_snapshot: Any, file_id: int, current_text_overlap: bytes, logger: Any) -> Tuple[bool, Any, Any, List[Any], bytes, int, bytes, int, int]:
         logger.warning(f"Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
         max_search_clusters = 1000
         search_count = 0
@@ -208,6 +209,29 @@ class Carver:
         logger.error(f"Search failed. Aborting recovery for file {file_id}.")
         f.seek(original_pos)
         return False, snapshot, parser_snapshot, [], b"", 0, b"", -1, -1
+
+    def _record_fragment(self, current_fragments: List[Dict[str, int]], phys_start: int, phys_end: int):
+        """Helper to append or extend contiguous file fragments for the carve report."""
+        if not current_fragments:
+            current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
+            return
+
+        if current_fragments[-1]["end_offset"] == phys_start:
+            current_fragments[-1]["end_offset"] = phys_end
+            current_fragments[-1]["size"] += (phys_end - phys_start)
+        else:
+            current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
+
+    def _post_process_file(self, file_path: str, ext: str, logger: Any):
+        """Handles format-specific post-processing after a file is successfully carved to disk."""
+        if ext == "zip":
+            zip_out_dir = f"{file_path}_extracted"
+            try:
+                with zipfile.ZipFile(file_path, 'r') as zf:
+                    zf.extractall(zip_out_dir)
+                logger.info(f"Extracted DOCX/XLSX/ZIP contents to {zip_out_dir}")
+            except Exception as e:
+                logger.error(f"Recovered ZIP extraction failed: {e}")
 
     def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: int = None, worker_id: int = 0):
         os.makedirs(output_dir, exist_ok=True)
@@ -273,11 +297,7 @@ class Carver:
 
                         if carving:
                             if not just_started:
-                                if current_fragments[-1]["end_offset"] == phys_start:
-                                    current_fragments[-1]["end_offset"] = phys_end
-                                    current_fragments[-1]["size"] += (phys_end - phys_start)
-                                else:
-                                    current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
+                                self._record_fragment(current_fragments, phys_start, phys_end)
 
                             snapshot = engine.clone()
                             parser_snapshot = active_parser.clone()
@@ -343,16 +363,9 @@ class Carver:
                                     "total_size": sum(f["size"] for f in current_fragments)
                                 })
 
-                                # Recursive DOCX/XLSX support: Extract completed ZIPs
-                                if current_ext == "zip":
-                                    zip_path = os.path.join(output_dir, current_filename)
-                                    zip_out_dir = os.path.join(output_dir, f"{current_filename}_extracted")
-                                    try:
-                                        with zipfile.ZipFile(zip_path, 'r') as zf:
-                                            zf.extractall(zip_out_dir)
-                                        logger.info(f"Extracted DOCX/XLSX/ZIP contents to {zip_out_dir}")
-                                    except Exception as e:
-                                        logger.error(f"Recovered ZIP {current_filename} extraction failed: {e}")
+                                # Trigger post-processing routines
+                                carved_file_path = os.path.join(output_dir, current_filename)
+                                self._post_process_file(carved_file_path, current_ext, logger)
 
                                 file_id += 1
                                 carving = False
