@@ -5,13 +5,22 @@ import json
 import argparse
 import concurrent.futures
 from struct_carver.core.carver import Carver
+from struct_carver.dashboard import generate_dashboard
+from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
 
 SUPPORTED_FORMATS = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite', 'sqlitewal']
 
 
 def carve_worker(args):
-    image, output, cluster_size, formats, start, end, worker_id = args
-    carver = Carver(cluster_size=cluster_size, formats=formats)
+    image, output, cluster_size, formats, start, end, worker_id, custom_configs = args
+
+    custom_parsers = []
+    for cfg in custom_configs:
+        header = bytes.fromhex(cfg['header_hex'])
+        footer = bytes.fromhex(cfg['footer_hex'])
+        custom_parsers.append(DynamicBinaryParser(cfg['extension'], header, footer))
+
+    carver = Carver(cluster_size=cluster_size, formats=formats, custom_parsers=custom_parsers)
     carver.carve(image, output, start, end, worker_id)
 
 
@@ -29,7 +38,7 @@ def merge_worker_reports(output_dir):
         except Exception:
             pass
 
-    # Sort recovered files chronologically by their starting physical offset
+    # sort recovered files chronologically by their starting physical offset
     merged_report["files"].sort(key=lambda x: x["fragments"][0]["start_offset"] if x["fragments"] else 0)
 
     merged_path = os.path.join(output_dir, "carve_report.json")
@@ -48,6 +57,8 @@ def main():
     parser.add_argument('-f', '--formats', default="xml,html", help=f"Comma-separated list of formats. Supported: {', '.join(SUPPORTED_FORMATS)} (default: xml,html)")
     parser.add_argument('-c', '--cluster-size', type=int, default=4096, help="Disk cluster size in bytes (default: 4096)")
     parser.add_argument('-w', '--workers', type=int, default=1, help="Number of concurrent workers (default: 1)")
+    parser.add_argument('--config', type=str, help="Path to a custom JSON config file for defining additional linear binary formats.")
+    parser.add_argument('-d', '--dashboard', action='store_true', help="Automatically generate an interactive HTML dashboard upon completion.")
 
     args = parser.parse_args()
 
@@ -62,6 +73,15 @@ def main():
     if getattr(args, 'workers', 1) < 1:
         print("[!] Error: Workers must be a positive integer.")
         sys.exit(1)
+
+    custom_configs = []
+    if args.config:
+        if not os.path.isfile(args.config):
+            print(f"[!] Error: Config file '{args.config}' not found.")
+            sys.exit(1)
+        with open(args.config, 'r') as f:
+            custom_configs = json.load(f)
+        SUPPORTED_FORMATS.extend([cfg['extension'].lower() for cfg in custom_configs])
 
     raw_formats = [fmt.strip().lower() for fmt in args.formats.split(',')]
     valid_formats = [fmt for fmt in raw_formats if fmt in SUPPORTED_FORMATS]
@@ -81,18 +101,20 @@ def main():
     print(f"[*] Cluster Size: {args.cluster_size} bytes")
     print(f"[*] Formats:      {', '.join(valid_formats)}")
     print(f"[*] Workers:      {args.workers}")
+    if custom_configs:
+        print(f"[*] Custom Types: {len(custom_configs)} formats loaded from config")
     print("========================================\n")
 
     total_size = os.path.getsize(args.image)
     chunk_size = total_size // args.workers
-    # Ensure chunk size aligns with cluster size
+    # ensure chunk size aligns with cluster size
     chunk_size = (chunk_size // args.cluster_size) * args.cluster_size
 
     worker_args = []
     for i in range(args.workers):
         start = i * chunk_size
         end = start + chunk_size if i < args.workers - 1 else total_size
-        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i))
+        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i, custom_configs))
 
     try:
         if args.workers == 1:
@@ -102,10 +124,15 @@ def main():
                 futures = [executor.submit(carve_worker, arg) for arg in worker_args]
                 for future in concurrent.futures.as_completed(futures):
                     future.result()  # raises exceptions if any occurred
-        # Add newlines to push terminal prompt safely below the multiprocess tqdm output bars
+        # add newlines to push terminal prompt safely below the multiprocess tqdm output bars
         print("\n" * args.workers)
         print("[*] Carving process completed successfully.")
         merge_worker_reports(args.output)
+
+        if args.dashboard:
+            json_report = os.path.join(args.output, "carve_report.json")
+            html_out = os.path.join(args.output, "dashboard.html")
+            generate_dashboard(json_report, html_out)
     except KeyboardInterrupt:
         print("\n[!] Carving aborted by user.")
         sys.exit(130)

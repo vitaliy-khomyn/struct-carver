@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import concurrent.futures
 from struct_carver.core.carver import Carver
+from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
 
 
 def _run_carve_worker(args):
@@ -180,3 +181,35 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertEqual(len(report_files), 2, "Should have generated two distinct worker reports.")
             self.assertIn("carve_report_w0.json", report_files)
             self.assertIn("carve_report_w1.json", report_files)
+
+    def test_custom_dynamic_binary_carving(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            img_path = os.path.join(temp_dir, "evidence_custom.dd")
+            out_dir = os.path.join(temp_dir, "recovered_files")
+
+            cluster_size = 64
+            # mock a custom linear image format (e.g., PNG-like signature)
+            header = b'\x89PNG\r\n'
+            footer = b'IEND\xaeB`\x82'
+
+            cluster1 = header + (b'A' * (cluster_size - len(header)))
+            cluster2 = (b'B' * 20) + footer + (b'\x00' * (cluster_size - len(footer) - 20))
+
+            with open(img_path, 'wb') as f:
+                f.write(cluster1)
+                f.write(cluster2)
+
+            custom_parser = DynamicBinaryParser('png', header, footer)
+            carver = Carver(cluster_size=cluster_size, formats=[], custom_parsers=[custom_parser])
+            carver.carve(img_path, out_dir)
+
+            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report")]
+            self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one custom file.")
+            self.assertTrue(carved_files[0].endswith(".png"), "Carved file should use the custom extension.")
+
+            with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
+                data = f.read()
+
+            self.assertTrue(data.startswith(header), "Carved file should start with the custom header.")
+            self.assertTrue(data.endswith(footer), "Carved file should end with the custom footer.")
+            self.assertEqual(len(data), cluster_size + 20 + len(footer), "File should be accurately trimmed after the footer.")

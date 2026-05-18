@@ -82,7 +82,7 @@ class BufferedClusterReader:
 
 
 class Carver:
-    def __init__(self, cluster_size=4096, formats=None):
+    def __init__(self, cluster_size=4096, formats=None, custom_parsers=None):
         self.cluster_size = cluster_size
         self.parsers = []
 
@@ -105,6 +105,9 @@ class Carver:
             if parser_class:
                 self.parsers.append(parser_class())
 
+        if custom_parsers:
+            self.parsers.extend(custom_parsers)
+
         # dynamically build the reverse lookup map for file extensions
         self.ext_map = {cls: fmt for fmt, cls in AVAILABLE_PARSERS.items()}
 
@@ -112,15 +115,18 @@ class Carver:
         search_buffer = prev_overlap + cluster
         cluster_lower = search_buffer.lower()
         for parser in self.parsers:
+            is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
+            target_buffer = search_buffer if is_binary else cluster_lower
             for sig in parser.header_signatures:
-                if sig in cluster_lower:
+                sig_to_search = sig if is_binary else sig.lower()
+                if sig_to_search in target_buffer:
                     parser.reset()
-                    if getattr(parser, 'engine_type', 'semantic') == 'binary':
+                    if is_binary:
                         engine = BinaryOffsetEngine()
                     else:
                         engine = StackEngine()
 
-                    ext = self.ext_map.get(type(parser), "bin")
+                    ext = getattr(parser, 'ext', self.ext_map.get(type(parser), "bin"))
                     out_path = os.path.join(output_dir, f"carved_w{worker_id}_{file_id}.{ext}")
                     handle = open(out_path, 'wb')
                     return True, parser, engine, handle, search_buffer
@@ -186,8 +192,7 @@ class Carver:
         return False, snapshot, parser_snapshot, [], b"", 0, b"", -1, -1
 
     def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: int = None, worker_id: int = 0):
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
 
         total_size = os.path.getsize(image_path)
         end_boundary = end_offset if end_offset else total_size
@@ -238,7 +243,7 @@ class Carver:
                             overlap_len = len(search_buffer) - (phys_end - phys_start)
                             adj_start = phys_start - overlap_len
                             current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
-                            current_ext = self.ext_map.get(type(active_parser), "bin")
+                            current_ext = getattr(active_parser, 'ext', self.ext_map.get(type(active_parser), "bin"))
                             current_filename = f"carved_w{worker_id}_{file_id}.{current_ext}"
                             just_started = True
                         else:
