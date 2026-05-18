@@ -20,6 +20,9 @@ class XMLParser(BaseFormatParser):
         self.in_cdata = False
         self.in_comment = False
 
+    def state_tuple(self) -> tuple:
+        return (self.in_cdata, self.in_comment)
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'<?xml', b'<html']

@@ -87,6 +87,7 @@ class Carver:
         self.parsers = []
         self.max_search_clusters = max_search_clusters
         self.text_density_threshold = text_density_threshold
+        self.cluster_cache = {}
 
         AVAILABLE_PARSERS = {
             'xml': XMLParser,
@@ -175,13 +176,27 @@ class Carver:
             if not candidate_cluster:
                 break
 
-            test_engine = snapshot.clone()
-            test_parser = parser_snapshot.clone()
-            candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
-
-            is_text_heavy = False
+            cache_key = None
             if not is_binary:
-                is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
+                cache_key = (cand_start, type(parser_snapshot), parser_snapshot.state_tuple(), current_text_overlap)
+
+            if cache_key and cache_key in self.cluster_cache:
+                candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, cached_parser = self.cluster_cache[cache_key]
+                test_engine = snapshot.clone()
+                test_parser = cached_parser.clone()
+                test_engine.process_tags(candidate_tags)
+            else:
+                test_engine = snapshot.clone()
+                test_parser = parser_snapshot.clone()
+                candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
+
+                is_text_heavy = False
+                if not is_binary:
+                    is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
+
+                    if len(self.cluster_cache) > 100000:
+                        self.cluster_cache.clear()
+                    self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone())
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                 tqdm.write(f"  [+] Found valid continuation after {search_count + 1} clusters!")

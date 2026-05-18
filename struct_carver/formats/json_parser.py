@@ -27,6 +27,9 @@ class JSONParser(BaseFormatParser):
         self.in_string = False
         self.escape_next = False
 
+    def state_tuple(self) -> tuple:
+        return (self.in_string, self.escape_next)
+
     @property
     def header_signatures(self) -> List[bytes]:
         # Simple heuristic headers for JSON objects or arrays

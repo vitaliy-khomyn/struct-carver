@@ -14,6 +14,9 @@ class RTFParser(BaseFormatParser):
     def reset(self):
         self.escape = False
 
+    def state_tuple(self) -> tuple:
+        return (self.escape,)
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'{\\rtf1']

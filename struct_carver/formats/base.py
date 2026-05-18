@@ -26,3 +26,7 @@ class BaseFormatParser(ABC):
     @abstractmethod
     def reset(self):
         pass
+
+    def state_tuple(self) -> tuple:
+        """Returns a hashable tuple of the internal parsing state for caching."""
+        return ()

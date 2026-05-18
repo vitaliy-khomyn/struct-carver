@@ -23,6 +23,9 @@ class HTMLParser(BaseFormatParser):
     def reset(self):
         self.in_comment = False
 
+    def state_tuple(self) -> tuple:
+        return (self.in_comment,)
+
     @property
     def header_signatures(self) -> List[bytes]:
         return [b'<html', b'<!doctype html']

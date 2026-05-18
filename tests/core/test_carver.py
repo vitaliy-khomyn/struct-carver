@@ -213,3 +213,25 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertTrue(data.startswith(header), "Carved file should start with the custom header.")
             self.assertTrue(data.endswith(footer), "Carved file should end with the custom footer.")
             self.assertEqual(len(data), cluster_size + 20 + len(footer), "File should be accurately trimmed after the footer.")
+
+    def test_cluster_cache_population(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            img_path = os.path.join(temp_dir, "evidence_cache.dd")
+            out_dir = os.path.join(temp_dir, "recovered_files")
+
+            cluster_size = 64
+            cluster1 = b'<?xml version="1.0"?><root><item>A</item>'.ljust(cluster_size, b'\x00')
+            # corrupt block to trigger gap-jump and populate cache
+            cluster2 = b'stray text data </div> random noise'.ljust(cluster_size, b'\x00')
+            cluster3 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
+
+            with open(img_path, 'wb') as f:
+                f.write(cluster1)
+                f.write(cluster2)
+                f.write(cluster3)
+
+            carver = Carver(cluster_size=cluster_size, formats=['xml'])
+            carver.carve(img_path, out_dir)
+
+            # verify cache was populated during the gap jump over cluster 2
+            self.assertGreater(len(carver.cluster_cache), 0, "Cluster cache should be populated after a gap jump.")
