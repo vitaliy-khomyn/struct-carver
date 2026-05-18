@@ -1,18 +1,21 @@
 import os
 import json
 import argparse
+from struct_carver.logger import setup_logger
 
 
 def generate_dashboard(json_path: str, output_html: str):
+    logger = setup_logger("Dashboard")
+
     if not os.path.exists(json_path):
-        print(f"[!] Error: JSON report '{json_path}' not found.")
+        logger.error(f"JSON report '{json_path}' not found.")
         return
 
     with open(json_path, 'r') as f:
         try:
             report = json.load(f)
         except json.JSONDecodeError:
-            print("[!] Error: Invalid JSON file.")
+            logger.error("Invalid JSON file.")
             return
 
     files = report.get("files", [])
@@ -156,7 +159,7 @@ def generate_dashboard(json_path: str, output_html: str):
     with open(output_html, 'w', encoding='utf-8') as f:
         f.write(html_template)
 
-    print(f"[*] Dashboard successfully generated at: {output_html}")
+    logger.info(f"Dashboard successfully generated at: {output_html}")
 
 
 def main():

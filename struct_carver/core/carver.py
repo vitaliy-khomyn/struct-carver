@@ -12,6 +12,7 @@ from struct_carver.formats.sqlite_parser import SQLiteParser
 from struct_carver.formats.sqlite_wal_parser import SQLiteWALParser
 from struct_carver.core.stack_engine import StackEngine
 from struct_carver.core.binary_engine import BinaryOffsetEngine
+from struct_carver.logger import setup_logger
 
 
 class BufferedClusterReader:
@@ -162,8 +163,8 @@ class Carver:
             bytes_to_advance = last_offset - len(text_overlap)
             return tags, held_back_bytes, bytes_to_advance
 
-    def _attempt_gap_jump(self, f, snapshot, parser_snapshot, file_id: int, current_text_overlap: bytes):
-        tqdm.write(f"[*] Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
+    def _attempt_gap_jump(self, f, snapshot, parser_snapshot, file_id: int, current_text_overlap: bytes, logger):
+        logger.warning(f"Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
         max_search_clusters = 1000
         search_count = 0
         original_pos = f.tell()
@@ -199,184 +200,192 @@ class Carver:
                     self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone())
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
-                tqdm.write(f"  [+] Found valid continuation after {search_count + 1} clusters!")
+                logger.info(f"Found valid continuation after {search_count + 1} clusters!")
                 return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end
 
             search_count += 1
 
-        tqdm.write(f"  [-] Search failed. Aborting recovery for file {file_id}.")
+        logger.error(f"Search failed. Aborting recovery for file {file_id}.")
         f.seek(original_pos)
         return False, snapshot, parser_snapshot, [], b"", 0, b"", -1, -1
 
     def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: int = None, worker_id: int = 0):
         os.makedirs(output_dir, exist_ok=True)
 
-        total_size = os.path.getsize(image_path)
-        end_boundary = end_offset if end_offset else total_size
+        logger = setup_logger(f"Worker-{worker_id}", os.path.join(output_dir, f"audit_w{worker_id}.log"))
+        logger.info(f"Starting carving process for worker {worker_id} from offset {start_offset} to {end_offset or 'EOF'}")
 
-        with BufferedClusterReader(image_path) as f:
-            if start_offset > 0:
-                f.seek(start_offset)
+        try:
+            total_size = os.path.getsize(image_path)
+            end_boundary = end_offset if end_offset else total_size
 
-            file_id = 0
-            carving = False
-            current_file_handle = None
-            engine = None
-            active_parser = None
-            carve_text_overlap = b""
-            report = {"files": []}
+            with BufferedClusterReader(image_path) as f:
+                if start_offset > 0:
+                    f.seek(start_offset)
 
-            max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
-            overlap_size = max(0, max_sig_len - 1)
-            prev_overlap = b""
+                file_id = 0
+                carving = False
+                current_file_handle = None
+                engine = None
+                active_parser = None
+                carve_text_overlap = b""
+                report = {"files": []}
 
-            pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id)
-            try:
-                while True:
-                    if not carving and f.tell() >= end_boundary:
-                        break
+                max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
+                overlap_size = max(0, max_sig_len - 1)
+                prev_overlap = b""
 
-                    # dynamically update progress bar to current position, supporting gap jump rewinds
-                    pbar.n = f.tell() - start_offset
-                    pbar.refresh()
+                pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id)
+                try:
+                    while True:
+                        if not carving and f.tell() >= end_boundary:
+                            break
 
-                    # 1. read the disk cluster by cluster
-                    phys_start = f.tell()
-                    cluster = f.read(self.cluster_size)
-                    phys_end = f.tell()
-                    if not cluster:
-                        break
+                        # dynamically update progress bar to current position, supporting gap jump rewinds
+                        pbar.n = f.tell() - start_offset
+                        pbar.refresh()
 
-                    just_started = False
-                    if not carving:
-                        # 2. search for the beginning of a file
-                        carving, active_parser, engine, current_file_handle, search_buffer = self._detect_header(
-                            cluster, prev_overlap, file_id, output_dir, worker_id
-                        )
-                        if carving:
-                            cluster = search_buffer
-                            carve_text_overlap = b""
+                        # 1. read the disk cluster by cluster
+                        phys_start = f.tell()
+                        cluster = f.read(self.cluster_size)
+                        phys_end = f.tell()
+                        if not cluster:
+                            break
 
-                            overlap_len = len(search_buffer) - (phys_end - phys_start)
-                            adj_start = phys_start - overlap_len
-                            current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
-                            current_ext = getattr(active_parser, 'ext', self.ext_map.get(type(active_parser), "bin"))
-                            current_filename = f"carved_w{worker_id}_{file_id}.{current_ext}"
-                            just_started = True
-                        else:
-                            prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
-
-                    if carving:
-                        if not just_started:
-                            if current_fragments[-1]["end_offset"] == phys_start:
-                                current_fragments[-1]["end_offset"] = phys_end
-                                current_fragments[-1]["size"] += (phys_end - phys_start)
-                            else:
-                                current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
-
-                        snapshot = engine.clone()
-                        parser_snapshot = active_parser.clone()
-                        tags, carve_text_overlap, bytes_to_advance = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
-
-                        cluster_to_write = cluster
-                        # 4. determine state
-                        if engine.is_corrupted:
-                            found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end = self._attempt_gap_jump(
-                                f, snapshot, parser_snapshot, file_id, carve_text_overlap
+                        just_started = False
+                        if not carving:
+                            # 2. search for the beginning of a file
+                            carving, active_parser, engine, current_file_handle, search_buffer = self._detect_header(
+                                cluster, prev_overlap, file_id, output_dir, worker_id
                             )
-                            if found:
-                                engine = new_engine
-                                active_parser = new_parser
-                                carve_text_overlap = new_overlap
-                                cluster_to_write = candidate_cluster
-                                current_fragments.append({"start_offset": cand_start, "end_offset": cand_end, "size": cand_end - cand_start})
+                            if carving:
+                                cluster = search_buffer
+                                carve_text_overlap = b""
+
+                                overlap_len = len(search_buffer) - (phys_end - phys_start)
+                                adj_start = phys_start - overlap_len
+                                current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
+                                current_ext = getattr(active_parser, 'ext', self.ext_map.get(type(active_parser), "bin"))
+                                current_filename = f"carved_w{worker_id}_{file_id}.{current_ext}"
+                                just_started = True
                             else:
-                                carving = False
-                                active_parser = None
+                                prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
+
+                        if carving:
+                            if not just_started:
+                                if current_fragments[-1]["end_offset"] == phys_start:
+                                    current_fragments[-1]["end_offset"] = phys_end
+                                    current_fragments[-1]["size"] += (phys_end - phys_start)
+                                else:
+                                    current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
+
+                            snapshot = engine.clone()
+                            parser_snapshot = active_parser.clone()
+                            tags, carve_text_overlap, bytes_to_advance = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
+
+                            cluster_to_write = cluster
+                            # 4. determine state
+                            if engine.is_corrupted:
+                                found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end = self._attempt_gap_jump(
+                                    f, snapshot, parser_snapshot, file_id, carve_text_overlap, logger
+                                )
+                                if found:
+                                    engine = new_engine
+                                    active_parser = new_parser
+                                    carve_text_overlap = new_overlap
+                                    cluster_to_write = candidate_cluster
+                                    current_fragments.append({"start_offset": cand_start, "end_offset": cand_end, "size": cand_end - cand_start})
+                                else:
+                                    carving = False
+                                    active_parser = None
+                                    if current_file_handle:
+                                        current_file_handle.close()
+                                        current_file_handle = None
+
+                                        # Rename the file to explicitly mark it as a partial recovery
+                                        old_path = os.path.join(output_dir, current_filename)
+                                        current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
+                                        new_path = os.path.join(output_dir, current_filename)
+                                        if os.path.exists(old_path):
+                                            os.rename(old_path, new_path)
+
+                                    report["files"].append({
+                                        "file_id": file_id,
+                                        "filename": current_filename,
+                                        "format": current_ext,
+                                        "status": "partial",
+                                        "fragments": current_fragments,
+                                        "total_size": sum(f["size"] for f in current_fragments)
+                                    })
+                                    file_id += 1
+                                    continue
+
+                            # check for completion
+                            if carving and engine.is_empty() and len(tags) > 0:
+                                logger.info(f"Successfully carved file {file_id}!")
+                                write_len = max(0, bytes_to_advance)
+
+                                discarded_bytes = len(cluster_to_write) - write_len
+                                current_fragments[-1]["end_offset"] -= discarded_bytes
+                                current_fragments[-1]["size"] -= discarded_bytes
+
+                                current_file_handle.write(cluster_to_write[:write_len])
                                 if current_file_handle:
                                     current_file_handle.close()
                                     current_file_handle = None
-
-                                    # Rename the file to explicitly mark it as a partial recovery
-                                    old_path = os.path.join(output_dir, current_filename)
-                                    current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
-                                    new_path = os.path.join(output_dir, current_filename)
-                                    if os.path.exists(old_path):
-                                        os.rename(old_path, new_path)
 
                                 report["files"].append({
                                     "file_id": file_id,
                                     "filename": current_filename,
                                     "format": current_ext,
-                                    "status": "partial",
+                                    "status": "complete",
                                     "fragments": current_fragments,
                                     "total_size": sum(f["size"] for f in current_fragments)
                                 })
+
+                                # Recursive DOCX/XLSX support: Extract completed ZIPs
+                                if current_ext == "zip":
+                                    zip_path = os.path.join(output_dir, current_filename)
+                                    zip_out_dir = os.path.join(output_dir, f"{current_filename}_extracted")
+                                    try:
+                                        with zipfile.ZipFile(zip_path, 'r') as zf:
+                                            zf.extractall(zip_out_dir)
+                                        logger.info(f"Extracted DOCX/XLSX/ZIP contents to {zip_out_dir}")
+                                    except Exception as e:
+                                        logger.error(f"Recovered ZIP {current_filename} extraction failed: {e}")
+
                                 file_id += 1
-                                continue
+                                carving = False
+                                active_parser = None
+                                prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
+                            else:
+                                current_file_handle.write(cluster_to_write)
+                finally:
+                    pbar.close()
+                    # ensure final file handle is closed if the image ends prematurely or an exception occurs
+                    if current_file_handle and not current_file_handle.closed:
+                        current_file_handle.close()
 
-                        # check for completion
-                        if carving and engine.is_empty() and len(tags) > 0:
-                            tqdm.write(f"[+] Successfully carved file {file_id}!")
-                            write_len = max(0, bytes_to_advance)
+                        old_path = os.path.join(output_dir, current_filename)
+                        current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
+                        new_path = os.path.join(output_dir, current_filename)
+                        if os.path.exists(old_path):
+                            os.rename(old_path, new_path)
 
-                            discarded_bytes = len(cluster_to_write) - write_len
-                            current_fragments[-1]["end_offset"] -= discarded_bytes
-                            current_fragments[-1]["size"] -= discarded_bytes
+                        report["files"].append({
+                            "file_id": file_id,
+                            "filename": current_filename,
+                            "format": current_ext,
+                            "status": "incomplete_eof",
+                            "fragments": current_fragments,
+                            "total_size": sum(f["size"] for f in current_fragments)
+                        })
 
-                            current_file_handle.write(cluster_to_write[:write_len])
-                            if current_file_handle:
-                                current_file_handle.close()
-                                current_file_handle = None
-
-                            report["files"].append({
-                                "file_id": file_id,
-                                "filename": current_filename,
-                                "format": current_ext,
-                                "status": "complete",
-                                "fragments": current_fragments,
-                                "total_size": sum(f["size"] for f in current_fragments)
-                            })
-
-                            # Recursive DOCX/XLSX support: Extract completed ZIPs
-                            if current_ext == "zip":
-                                zip_path = os.path.join(output_dir, current_filename)
-                                zip_out_dir = os.path.join(output_dir, f"{current_filename}_extracted")
-                                try:
-                                    with zipfile.ZipFile(zip_path, 'r') as zf:
-                                        zf.extractall(zip_out_dir)
-                                    tqdm.write(f"  [+] Extracted DOCX/XLSX/ZIP contents to {zip_out_dir}")
-                                except Exception as e:
-                                    tqdm.write(f"  [-] Recovered ZIP {current_filename} extraction failed: {e}")
-
-                            file_id += 1
-                            carving = False
-                            active_parser = None
-                            prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
-                        else:
-                            current_file_handle.write(cluster_to_write)
-            finally:
-                pbar.close()
-                # ensure final file handle is closed if the image ends prematurely or an exception occurs
-                if current_file_handle and not current_file_handle.closed:
-                    current_file_handle.close()
-
-                    old_path = os.path.join(output_dir, current_filename)
-                    current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
-                    new_path = os.path.join(output_dir, current_filename)
-                    if os.path.exists(old_path):
-                        os.rename(old_path, new_path)
-
-                    report["files"].append({
-                        "file_id": file_id,
-                        "filename": current_filename,
-                        "format": current_ext,
-                        "status": "incomplete_eof",
-                        "fragments": current_fragments,
-                        "total_size": sum(f["size"] for f in current_fragments)
-                    })
-
-            report_path = os.path.join(output_dir, f"carve_report_w{worker_id}.json")
-            with open(report_path, "w") as f_report:
-                json.dump(report, f_report, indent=4)
-            tqdm.write(f"[*] Forensic carve report saved to {report_path}")
+                report_path = os.path.join(output_dir, f"carve_report_w{worker_id}.json")
+                with open(report_path, "w") as f_report:
+                    json.dump(report, f_report, indent=4)
+                logger.info(f"Forensic carve report saved to {report_path}")
+        finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)

@@ -7,6 +7,7 @@ import concurrent.futures
 from struct_carver.core.carver import Carver
 from struct_carver.dashboard import generate_dashboard
 from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
+from struct_carver.logger import setup_logger
 
 SUPPORTED_FORMATS = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite', 'sqlitewal']
 
@@ -62,6 +63,9 @@ def merge_worker_reports(output_dir):
     for rf in report_files:
         os.remove(rf)
 
+    logger = setup_logger("Merge")
+    logger.info("Worker reports successfully merged into single carve_report.json")
+
 
 def main():
     parser = argparse.ArgumentParser(description="StructCarve: A semantic, non-sequential file carver for digital forensics.")
@@ -78,30 +82,34 @@ def main():
 
     args = parser.parse_args()
 
+    # Ensure output directory exists before configuring loggers
+    os.makedirs(args.output, exist_ok=True)
+    logger = setup_logger("Main", os.path.join(args.output, "audit_main.log"))
+
     if not os.path.isfile(args.image):
-        print(f"[!] Error: Image file '{args.image}' not found.")
+        logger.error(f"Image file '{args.image}' not found.")
         sys.exit(1)
 
     if args.cluster_size <= 0:
-        print("[!] Error: Cluster size must be a positive integer.")
+        logger.error("Cluster size must be a positive integer.")
         sys.exit(1)
 
     if getattr(args, 'workers', 1) < 1:
-        print("[!] Error: Workers must be a positive integer.")
+        logger.error("Workers must be a positive integer.")
         sys.exit(1)
 
     if args.max_search <= 0:
-        print("[!] Error: Max search clusters must be greater than 0.")
+        logger.error("Max search clusters must be greater than 0.")
         sys.exit(1)
 
     if not (0.0 <= args.text_density <= 1.0):
-        print("[!] Error: Text density threshold must be between 0.0 and 1.0.")
+        logger.error("Text density threshold must be between 0.0 and 1.0.")
         sys.exit(1)
 
     custom_configs = []
     if args.config:
         if not os.path.isfile(args.config):
-            print(f"[!] Error: Config file '{args.config}' not found.")
+            logger.error(f"Config file '{args.config}' not found.")
             sys.exit(1)
         with open(args.config, 'r') as f:
             custom_configs = json.load(f)
@@ -112,26 +120,26 @@ def main():
     invalid_formats = [fmt for fmt in raw_formats if fmt not in SUPPORTED_FORMATS]
 
     if invalid_formats:
-        print(f"[!] Warning: Ignoring unsupported formats: {', '.join(invalid_formats)}")
+        logger.warning(f"Ignoring unsupported formats: {', '.join(invalid_formats)}")
 
     if not valid_formats:
-        print("[!] Error: No valid formats specified to carve. Exiting.")
+        logger.error("No valid formats specified to carve. Exiting.")
         sys.exit(1)
 
-    print("========================================")
-    print("[*] Starting StructCarve")
-    print(f"[*] Target Image: {args.image}")
-    print(f"[*] Output Dir:   {args.output}")
-    print(f"[*] Cluster Size: {args.cluster_size} bytes")
-    print(f"[*] Formats:      {', '.join(valid_formats)}")
-    print(f"[*] Max Search:   {args.max_search} clusters")
-    print(f"[*] Text Density: {args.text_density * 100}%")
-    print(f"[*] Workers:      {args.workers}")
+    logger.info("========================================")
+    logger.info("Starting StructCarve")
+    logger.info(f"Target Image: {args.image}")
+    logger.info(f"Output Dir:   {args.output}")
+    logger.info(f"Cluster Size: {args.cluster_size} bytes")
+    logger.info(f"Formats:      {', '.join(valid_formats)}")
+    logger.info(f"Max Search:   {args.max_search} clusters")
+    logger.info(f"Text Density: {args.text_density * 100}%")
+    logger.info(f"Workers:      {args.workers}")
     if custom_configs:
-        print(f"[*] Custom Types: {len(custom_configs)} formats loaded from config")
+        logger.info(f"Custom Types: {len(custom_configs)} formats loaded from config")
     if args.profile:
-        print("[*] Profiling:    Enabled (Output to .prof files)")
-    print("========================================\n")
+        logger.info("Profiling:    Enabled (Output to .prof files)")
+    logger.info("========================================")
 
     total_size = os.path.getsize(args.image)
     chunk_size = total_size // args.workers
@@ -154,7 +162,7 @@ def main():
                     future.result()  # raises exceptions if any occurred
         # add newlines to push terminal prompt safely below the multiprocess tqdm output bars
         print("\n" * args.workers)
-        print("[*] Carving process completed successfully.")
+        logger.info("Carving process completed successfully.")
         merge_worker_reports(args.output)
 
         if args.dashboard:
@@ -162,10 +170,10 @@ def main():
             html_out = os.path.join(args.output, "dashboard.html")
             generate_dashboard(json_report, html_out)
     except KeyboardInterrupt:
-        print("\n[!] Carving aborted by user.")
+        logger.warning("Carving aborted by user.")
         sys.exit(130)
     except Exception as e:
-        print(f"\n[!] An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")
         sys.exit(1)
 
 
