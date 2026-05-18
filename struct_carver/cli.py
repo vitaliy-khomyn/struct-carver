@@ -12,7 +12,7 @@ SUPPORTED_FORMATS = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite', 'sqli
 
 
 def carve_worker(args):
-    image, output, cluster_size, formats, start, end, worker_id, custom_configs = args
+    image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density = args
 
     custom_parsers = []
     for cfg in custom_configs:
@@ -20,7 +20,10 @@ def carve_worker(args):
         footer = bytes.fromhex(cfg['footer_hex'])
         custom_parsers.append(DynamicBinaryParser(cfg['extension'], header, footer))
 
-    carver = Carver(cluster_size=cluster_size, formats=formats, custom_parsers=custom_parsers)
+    carver = Carver(
+        cluster_size=cluster_size, formats=formats, custom_parsers=custom_parsers,
+        max_search_clusters=max_search, text_density_threshold=density
+    )
     carver.carve(image, output, start, end, worker_id)
 
 
@@ -58,6 +61,8 @@ def main():
     parser.add_argument('-c', '--cluster-size', type=int, default=4096, help="Disk cluster size in bytes (default: 4096)")
     parser.add_argument('-w', '--workers', type=int, default=1, help="Number of concurrent workers (default: 1)")
     parser.add_argument('--config', type=str, help="Path to a custom JSON config file for defining additional linear binary formats.")
+    parser.add_argument('--max-search', type=int, default=1000, help="Max clusters to scan during a gap-jump (default: 1000)")
+    parser.add_argument('--text-density', type=float, default=0.8, help="Text density threshold for accepting tagless clusters (default: 0.8)")
     parser.add_argument('-d', '--dashboard', action='store_true', help="Automatically generate an interactive HTML dashboard upon completion.")
 
     args = parser.parse_args()
@@ -72,6 +77,14 @@ def main():
 
     if getattr(args, 'workers', 1) < 1:
         print("[!] Error: Workers must be a positive integer.")
+        sys.exit(1)
+
+    if args.max_search <= 0:
+        print("[!] Error: Max search clusters must be greater than 0.")
+        sys.exit(1)
+
+    if not (0.0 <= args.text_density <= 1.0):
+        print("[!] Error: Text density threshold must be between 0.0 and 1.0.")
         sys.exit(1)
 
     custom_configs = []
@@ -100,6 +113,8 @@ def main():
     print(f"[*] Output Dir:   {args.output}")
     print(f"[*] Cluster Size: {args.cluster_size} bytes")
     print(f"[*] Formats:      {', '.join(valid_formats)}")
+    print(f"[*] Max Search:   {args.max_search} clusters")
+    print(f"[*] Text Density: {args.text_density * 100}%")
     print(f"[*] Workers:      {args.workers}")
     if custom_configs:
         print(f"[*] Custom Types: {len(custom_configs)} formats loaded from config")
@@ -114,7 +129,7 @@ def main():
     for i in range(args.workers):
         start = i * chunk_size
         end = start + chunk_size if i < args.workers - 1 else total_size
-        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i, custom_configs))
+        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i, custom_configs, args.max_search, args.text_density))
 
     try:
         if args.workers == 1:

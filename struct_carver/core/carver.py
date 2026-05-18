@@ -82,9 +82,11 @@ class BufferedClusterReader:
 
 
 class Carver:
-    def __init__(self, cluster_size=4096, formats=None, custom_parsers=None):
+    def __init__(self, cluster_size=4096, formats=None, custom_parsers=None, max_search_clusters=1000, text_density_threshold=0.8):
         self.cluster_size = cluster_size
         self.parsers = []
+        self.max_search_clusters = max_search_clusters
+        self.text_density_threshold = text_density_threshold
 
         AVAILABLE_PARSERS = {
             'xml': XMLParser,
@@ -179,7 +181,7 @@ class Carver:
 
             is_text_heavy = False
             if not is_binary:
-                is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * 0.8)
+                is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
                 tqdm.write(f"  [+] Found valid continuation after {search_count + 1} clusters!")
