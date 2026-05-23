@@ -30,7 +30,7 @@ class StackEngine:
         return len(self.stack) == 0
 
     def reset(self):
-        self.stack = []
+        self.stack.clear()
         self.is_corrupted = False
 
     def clone(self) -> 'StackEngine':

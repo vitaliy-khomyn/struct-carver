@@ -124,12 +124,16 @@ class Carver:
             target_buffer = search_buffer if is_binary else cluster_lower
             for sig in parser.header_signatures:
                 sig_to_search = sig if is_binary else sig.lower()
-                if sig_to_search in target_buffer:
+                idx = target_buffer.find(sig_to_search)
+                if idx != -1:
                     parser.reset()
                     if is_binary:
                         engine = BinaryOffsetEngine()
                     else:
                         engine = StackEngine()
+
+                    # Slice the search buffer to begin exactly at the matching signature
+                    search_buffer = search_buffer[idx:]
 
                     ext = getattr(parser, 'ext', self.ext_map.get(type(parser), "bin"))
                     out_path = os.path.join(output_dir, f"carved_w{worker_id}_{file_id}.{ext}")
@@ -166,7 +170,7 @@ class Carver:
 
     def _attempt_gap_jump(self, f: Any, snapshot: Any, parser_snapshot: Any, file_id: int, current_text_overlap: bytes, logger: Any) -> Tuple[bool, Any, Any, List[Any], bytes, int, bytes, int, int]:
         logger.warning(f"Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
-        max_search_clusters = 1000
+        max_search_clusters = getattr(self, 'max_search_clusters', 1000)
         search_count = 0
         original_pos = f.tell()
         is_binary = getattr(parser_snapshot, 'engine_type', 'semantic') == 'binary'
@@ -178,29 +182,38 @@ class Carver:
             if not candidate_cluster:
                 break
 
-            cache_key = None
-            if not is_binary:
-                cache_key = (cand_start, type(parser_snapshot), parser_snapshot.state_tuple(), current_text_overlap)
+            # Cache key can now be used for both binary and text parsers
+            cache_key = (cand_start, type(parser_snapshot), parser_snapshot.state_tuple(), current_text_overlap)
 
-            if cache_key and cache_key in self.cluster_cache:
+            if cache_key in self.cluster_cache:
                 candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, cached_parser = self.cluster_cache[cache_key]
                 test_engine = snapshot.clone()
                 test_parser = cached_parser.clone()
                 test_engine.process_tags(candidate_tags)
             else:
+                is_text_heavy = False
+                if not is_binary:
+                    # Performance Optimization: Lazy check for text parsers to avoid cloning and regex matching
+                    is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
+                    has_interesting_chars = False
+                    if isinstance(parser_snapshot, (XMLParser, HTMLParser)):
+                        has_interesting_chars = b'<' in candidate_cluster
+                    elif isinstance(parser_snapshot, (JSONParser, RTFParser)):
+                        has_interesting_chars = any(c in candidate_cluster for c in [b'{', b'}', b'[', b']', b'\\'])
+                    
+                    if not is_text_heavy and not has_interesting_chars:
+                        search_count += 1
+                        continue
+
                 test_engine = snapshot.clone()
                 test_parser = parser_snapshot.clone()
                 candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
 
-                is_text_heavy = False
-                if not is_binary:
-                    is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
+                if len(self.cluster_cache) > 100000:
+                    self.cluster_cache.clear()
+                self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone())
 
-                    if len(self.cluster_cache) > 100000:
-                        self.cluster_cache.clear()
-                    self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone())
-
-            if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy):
+            if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy or is_binary):
                 logger.info(f"Found valid continuation after {search_count + 1} clusters!")
                 return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end
 
@@ -258,6 +271,10 @@ class Carver:
                 max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
                 overlap_size = max(0, max_sig_len - 1)
                 prev_overlap = b""
+                if start_offset > 0 and overlap_size > 0:
+                    f.seek(start_offset - overlap_size)
+                    prev_overlap = f.read(overlap_size)
+                    f.seek(start_offset)
 
                 pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id)
                 try:

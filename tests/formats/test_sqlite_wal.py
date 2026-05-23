@@ -45,11 +45,13 @@ class TestSQLiteWALParser(unittest.TestCase):
         self.assertEqual(self.parser.salt1, 54321)
         self.assertEqual(self.parser.salt2, 9876)
 
-    def test_wal_frame_mismatch_corruption(self):
-        # inject an invalid frame salt to simulate a broken frame/fragmentation boundary
+    def test_wal_frame_mismatch_eof_completion(self):
+        # inject an invalid frame salt to simulate a broken frame/fragmentation boundary, which should act as EOF
         data = self._build_mock_wal('<', b'\x37\x7f\x06\x82', 4096, 1111, 2222, valid_frame=False)
         is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(data)
-        self.assertTrue(is_corrupted, "Parser failed to detect invalid frame salt mismatch.")
+        self.assertFalse(is_corrupted, "WAL EOF should not be flagged as corruption.")
+        self.assertTrue(is_complete, "WAL salt mismatch should mark completion (EOF).")
+        self.assertEqual(advance, 32, "WAL completion should advance exactly up to the last valid frame (32 bytes header).")
 
     def test_wal_spillover_in_frame_data(self):
         # Frame data split across chunks

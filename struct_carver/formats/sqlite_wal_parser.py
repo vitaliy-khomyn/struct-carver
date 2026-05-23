@@ -90,8 +90,8 @@ class SQLiteWALParser(BaseFormatParser):
             frame_salt1, frame_salt2 = struct.unpack(f'{self.endian}II', frame_header[8:16])
 
             if frame_salt1 != self.salt1 or frame_salt2 != self.salt2:
-                # Frame mismatch! This is either corruption (triggering gap-jump) or EOF
-                return True, False, 0, 0
+                # Frame mismatch! In SQLite WAL, a salt mismatch indicates the end of the log session (EOF).
+                return False, True, idx, 0
 
             frame_total_size = 24 + self.page_size
             if n - idx < frame_total_size:

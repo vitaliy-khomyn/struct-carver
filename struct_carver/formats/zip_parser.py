@@ -15,14 +15,23 @@ class ZIPParser(BaseFormatParser):
 
     def __init__(self):
         self.is_open = False
+        self.in_data_descriptor = False
+        self.compressed_bytes_processed = 0
 
     def clone(self) -> 'ZIPParser':
         new_parser = ZIPParser()
         new_parser.is_open = self.is_open
+        new_parser.in_data_descriptor = self.in_data_descriptor
+        new_parser.compressed_bytes_processed = self.compressed_bytes_processed
         return new_parser
 
     def reset(self):
         self.is_open = False
+        self.in_data_descriptor = False
+        self.compressed_bytes_processed = 0
+
+    def state_tuple(self) -> tuple:
+        return (self.is_open, self.in_data_descriptor, self.compressed_bytes_processed)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -56,6 +65,31 @@ class ZIPParser(BaseFormatParser):
             else:
                 idx = bytes_remaining
                 bytes_remaining = 0
+
+        # If we are in the middle of scanning for a data descriptor from a previous chunk
+        if self.in_data_descriptor:
+            desc_idx = data.find(b'PK\x07\x08', idx)
+            found_valid = False
+            while desc_idx != -1:
+                if n - desc_idx >= 16:
+                    comp_size_from_desc = struct.unpack('<I', data[desc_idx + 8 : desc_idx + 12])[0]
+                    calculated_comp_size = self.compressed_bytes_processed + (desc_idx - idx)
+                    if comp_size_from_desc == calculated_comp_size:
+                        idx = desc_idx + 16
+                        self.in_data_descriptor = False
+                        self.compressed_bytes_processed = 0
+                        found_valid = True
+                        break
+                else:
+                    # Need more bytes to validate the descriptor
+                    return False, False, n, 16 - (n - desc_idx)
+                desc_idx = data.find(b'PK\x07\x08', desc_idx + 1)
+
+            if not found_valid:
+                # We haven't found the descriptor in this chunk.
+                # All bytes in this chunk after 'idx' are part of the compressed data.
+                self.compressed_bytes_processed += (n - idx)
+                return False, False, n, 0
 
         while idx < n:
             # find the next relevant ZIP signature
@@ -101,9 +135,26 @@ class ZIPParser(BaseFormatParser):
                 fn_len, ef_len = struct.unpack('<HH', data[next_sig+26:next_sig+30])
 
                 if has_data_descriptor:
-                    # Size is unknown (0) until the data descriptor block.
-                    # Step over the header block and let the loop scan for the next signature.
-                    idx = next_sig + 30 + fn_len + ef_len
+                    header_end = next_sig + 30 + fn_len + ef_len
+                    # Look for the descriptor in the remaining part of this chunk
+                    desc_idx = data.find(b'PK\x07\x08', header_end)
+                    found_valid = False
+                    while desc_idx != -1:
+                        if n - desc_idx >= 16:
+                            comp_size_from_desc = struct.unpack('<I', data[desc_idx + 8 : desc_idx + 12])[0]
+                            calculated_comp_size = desc_idx - header_end
+                            if comp_size_from_desc == calculated_comp_size:
+                                idx = desc_idx + 16
+                                found_valid = True
+                                break
+                        else:
+                            return False, False, n, 16 - (n - desc_idx)
+                        desc_idx = data.find(b'PK\x07\x08', desc_idx + 1)
+
+                    if not found_valid:
+                        self.in_data_descriptor = True
+                        self.compressed_bytes_processed = n - header_end
+                        return False, False, n, 0
                     continue
 
                 total_size = 30 + fn_len + ef_len + comp_size

@@ -235,3 +235,29 @@ class TestCarverIntegration(unittest.TestCase):
 
             # verify cache was populated during the gap jump over cluster 2
             self.assertGreater(len(carver.cluster_cache), 0, "Cluster cache should be populated after a gap jump.")
+
+    def test_garbage_prefix_slicing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            img_path = os.path.join(temp_dir, "evidence_garbage.dd")
+            out_dir = os.path.join(temp_dir, "recovered_files")
+
+            cluster_size = 64
+            # Signature starts at offset 20
+            cluster1 = b'random garbage bytes' + b'<?xml version="1.0"?><root><item>A</item>'
+            cluster1 = cluster1[:cluster_size].ljust(cluster_size, b'\x00')
+            cluster2 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
+
+            with open(img_path, 'wb') as f:
+                f.write(cluster1)
+                f.write(cluster2)
+
+            carver = Carver(cluster_size=cluster_size, formats=['xml'])
+            carver.carve(img_path, out_dir)
+
+            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
+            self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one file.")
+
+            with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
+                data = f.read()
+
+            self.assertTrue(data.startswith(b'<?xml'), "Recovered file should start exactly with the XML header, not garbage prefix.")

@@ -40,10 +40,37 @@ def generate_dashboard(json_path: str, output_html: str):
             for frag in fragments
         ])
 
-        # Build a visual map representation (blocks)
-        map_blocks = ""
-        for frag in fragments:
-            map_blocks += f"<div class='frag-block' title='Offset: {frag['start_offset']} - Size: {frag['size']}'></div>"
+        # Build a visual map representation (tracks and segments)
+        visual_map = ""
+        if fragments:
+            span_start = fragments[0]["start_offset"]
+            span_end = fragments[-1]["end_offset"]
+            total_span = span_end - span_start
+            
+            map_blocks = ""
+            for idx, frag in enumerate(fragments):
+                if total_span > 0:
+                    left_pct = ((frag["start_offset"] - span_start) / total_span) * 100
+                    width_pct = (frag["size"] / total_span) * 100
+                else:
+                    left_pct = 0
+                    width_pct = 100
+                
+                # Cap minimum width at 2% for visual clarity
+                width_pct = max(2.0, width_pct)
+                
+                color_class = "segment-normal"
+                if idx == len(fragments) - 1:
+                    if status == "partial":
+                        color_class = "segment-partial"
+                    elif status == "incomplete_eof":
+                        color_class = "segment-incomplete"
+                
+                map_blocks += f"<div class='frag-segment {color_class}' style='left: {left_pct}%; width: {width_pct}%;' title='Offset: {frag['start_offset']} - Size: {frag['size']} B'></div>"
+            
+            visual_map = f"<div class='frag-track'>{map_blocks}</div>"
+        else:
+            visual_map = "<span class='text-muted'>No fragments</span>"
 
         rows_html += f"""
         <tr class="status-{status}">
@@ -59,7 +86,7 @@ def generate_dashboard(json_path: str, output_html: str):
                 </details>
             </td>
             <td class="map-cell">
-                <div class="frag-map">{map_blocks}</div>
+                {visual_map}
             </td>
         </tr>
         """
@@ -96,11 +123,12 @@ def generate_dashboard(json_path: str, output_html: str):
         details {{ cursor: pointer; }}
         .frag-details {{ margin-top: 5px; font-size: 12px; background: #ecf0f1; padding: 8px; border-radius: 4px; }}
         code {{ background: #dfe6e9; padding: 2px 4px; border-radius: 3px; font-family: monospace; }}
-        .frag-map {{ display: flex; gap: 2px; align-items: center; height: 100%; }}
-        .frag-block {{ width: 15px; height: 15px; background: #3498db; border-radius: 2px; cursor: pointer; }}
-        .frag-block:hover {{ background: #2980b9; transform: scale(1.2); }}
-        .status-partial .frag-block:last-child {{ background: #f39c12; }}
-        .status-incomplete_eof .frag-block:last-child {{ background: #e74c3c; }}
+        .frag-track {{ position: relative; width: 140px; height: 10px; background-color: #dfe6e9; border-radius: 5px; overflow: hidden; display: inline-block; }}
+        .frag-segment {{ position: absolute; height: 100%; transition: transform 0.1s; cursor: pointer; }}
+        .frag-segment:hover {{ transform: scaleY(1.3); }}
+        .segment-normal {{ background-color: #3498db; }}
+        .segment-partial {{ background-color: #f39c12; }}
+        .segment-incomplete {{ background-color: #e74c3c; }}
     </style>
 </head>
 <body>
