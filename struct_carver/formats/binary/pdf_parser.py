@@ -1,6 +1,6 @@
 import re
 from typing import List, Tuple
-from .base import BaseFormatParser
+from ..base import BaseFormatParser
 
 
 class PDFParser(BaseFormatParser):
@@ -67,9 +67,18 @@ class PDFParser(BaseFormatParser):
             if needed == 9:
                 data = data.lstrip(b'\r\n')
             suffix = b'endstream'[-needed:]
-            if not data.startswith(suffix):
-                return True, False, 0, 0
-            data = data[needed:]
+            if data.startswith(suffix):
+                data = data[needed:]
+                data_to_parse = data
+                if bytes_remaining == -1:
+                    bytes_remaining = 0
+            else:
+                if bytes_remaining == -1:
+                    data_to_parse = data
+                else:
+                    return True, False, 0, 0
+        else:
+            data_to_parse = data
 
         if not self.is_open:
             if b'%pdf-' in data.lower():
@@ -88,17 +97,37 @@ class PDFParser(BaseFormatParser):
                 if is_corr:
                     return True, False, 0, 0
                 data_to_parse = remaining_data
-        else:
-            data_to_parse = data
+        elif bytes_remaining == -1:
+            end_stream_idx = data.find(b'endstream')
+            if end_stream_idx != -1:
+                data_to_parse = data[end_stream_idx + 9:]
+                bytes_remaining = 0
+            else:
+                # Check for split endstream at the end of the chunk
+                found_split = False
+                for length in range(8, 0, -1):
+                    suffix = data[-length:]
+                    if b'endstream'.startswith(suffix):
+                        self.pending_endstream = True
+                        self.pending_bytes_needed = 9 - length
+                        found_split = True
+                        break
+                return False, False, len(data), -1
 
         # find streams and calculate future byte offsets
-        for match in re.finditer(rb'stream[\r\n]', data_to_parse):
-            stream_idx = match.start()
+        idx_stream = 0
+        while idx_stream < len(data_to_parse):
+            match = re.search(rb'stream[\r\n]', data_to_parse[idx_stream:])
+            if not match:
+                break
+
+            stream_idx = idx_stream + match.start()
+            stream_start = idx_stream + match.end()
             pre_stream = data_to_parse[:stream_idx]
             lengths = list(self.length_pattern.finditer(pre_stream))
+
             if lengths:
                 length_val = int(lengths[-1].group(1))
-                stream_start = match.end()
                 data_after_stream = len(data_to_parse) - stream_start
 
                 if data_after_stream < length_val:
@@ -109,9 +138,18 @@ class PDFParser(BaseFormatParser):
                     is_corr, remaining_data = self._validate_endstream(after_stream)
                     if is_corr:
                         return True, False, 0, 0
+                    idx_stream = len(data_to_parse) - len(remaining_data)
+            else:
+                # Unknown length stream (indirect reference)
+                end_stream_idx = data_to_parse.find(b'endstream', stream_start)
+                if end_stream_idx != -1:
+                    idx_stream = end_stream_idx + 9
+                else:
+                    bytes_remaining = -1
+                    break
 
         if bytes_remaining == 0 and not self.pending_endstream:
-            end_idx = data_to_parse.lower().find(b'%%eof')
+            end_idx = data_to_parse.lower().find(b'%%eof', idx_stream)
             if end_idx != -1:
                 advance = len(data) - len(data_to_parse) + end_idx + 5
                 return False, True, advance, 0

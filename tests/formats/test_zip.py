@@ -1,6 +1,6 @@
 import unittest
 import struct
-from struct_carver.formats.zip_parser import ZIPParser
+from struct_carver.formats.binary.zip_parser import ZIPParser
 
 
 class TestZIPParser(unittest.TestCase):

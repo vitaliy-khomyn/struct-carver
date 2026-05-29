@@ -71,7 +71,7 @@ def main():
     parser = argparse.ArgumentParser(description="StructCarve: A semantic, non-sequential file carver for digital forensics.")
     parser.add_argument('-i', '--image', required=True, help="Path to the raw forensic image (.dd, .raw)")
     parser.add_argument('-o', '--output', required=True, help="Directory to save the reassembled files")
-    parser.add_argument('-f', '--formats', default="xml,html", help=f"Comma-separated list of formats. Supported: {', '.join(SUPPORTED_FORMATS)} (default: xml,html)")
+    parser.add_argument('-f', '--formats', default=",".join(SUPPORTED_FORMATS), help=f"Comma-separated list of formats. Supported: {', '.join(SUPPORTED_FORMATS)} (default: all)")
     parser.add_argument('-c', '--cluster-size', type=int, default=4096, help="Disk cluster size in bytes (default: 4096)")
     parser.add_argument('-w', '--workers', type=int, default=1, help="Number of concurrent workers (default: 1)")
     parser.add_argument('--config', type=str, help="Path to a custom JSON config file for defining additional linear binary formats.")
@@ -81,6 +81,16 @@ def main():
     parser.add_argument('--profile', action='store_true', help="Enable cProfile performance profiling per worker.")
 
     args = parser.parse_args()
+
+    # Dynamically determine the numbered output directory based on original image filename
+    img_name = os.path.basename(args.image)
+    i = 1
+    while True:
+        candidate = os.path.join(args.output, f"{img_name}.{i}")
+        if not os.path.exists(candidate):
+            args.output = candidate
+            break
+        i += 1
 
     # Ensure output directory exists before configuring loggers
     os.makedirs(args.output, exist_ok=True)

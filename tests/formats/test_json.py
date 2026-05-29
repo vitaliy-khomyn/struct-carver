@@ -1,5 +1,5 @@
 import unittest
-from struct_carver.formats.json_parser import JSONParser
+from struct_carver.formats.text.json_parser import JSONParser
 
 
 class TestJSONParser(unittest.TestCase):

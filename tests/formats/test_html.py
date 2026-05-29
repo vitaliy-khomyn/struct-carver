@@ -1,5 +1,5 @@
 import unittest
-from struct_carver.formats.html_parser import HTMLParser
+from struct_carver.formats.text.html_parser import HTMLParser
 
 
 class TestHTMLParser(unittest.TestCase):

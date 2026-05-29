@@ -1,6 +1,6 @@
 import unittest
 import struct
-from struct_carver.formats.sqlite_wal_parser import SQLiteWALParser
+from struct_carver.formats.binary.sqlite_wal_parser import SQLiteWALParser
 
 
 class TestSQLiteWALParser(unittest.TestCase):

@@ -1,5 +1,5 @@
 import unittest
-from struct_carver.formats.pdf_parser import PDFParser
+from struct_carver.formats.binary.pdf_parser import PDFParser
 
 
 class TestPDFParser(unittest.TestCase):

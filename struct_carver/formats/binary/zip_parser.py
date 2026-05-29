@@ -1,6 +1,6 @@
 import struct
 from typing import List, Tuple
-from .base import BaseFormatParser
+from ..base import BaseFormatParser
 
 
 class ZIPParser(BaseFormatParser):
@@ -99,9 +99,13 @@ class ZIPParser(BaseFormatParser):
 
             valid_sigs = [p for p in [next_local, next_central, next_end] if p != -1]
             if not valid_sigs:
+                if n - idx >= 4:
+                    return True, False, idx, 0
                 break  # waiting for more data to complete the block
 
             next_sig = min(valid_sigs)
+            if next_sig > idx:
+                return True, False, idx, 0
 
             if next_sig == next_end:
                 if n - next_sig >= 22:

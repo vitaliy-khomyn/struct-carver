@@ -1,5 +1,5 @@
 import unittest
-from struct_carver.formats.rtf_parser import RTFParser
+from struct_carver.formats.text.rtf_parser import RTFParser
 
 
 class TestRTFParser(unittest.TestCase):

@@ -1,6 +1,6 @@
 import re
 from typing import List, Tuple
-from .base import BaseFormatParser
+from ..base import BaseFormatParser
 
 
 class HTMLParser(BaseFormatParser):
@@ -14,17 +14,20 @@ class HTMLParser(BaseFormatParser):
         }
 
         self.in_comment = False
+        self.is_corrupted = False
 
     def clone(self) -> 'HTMLParser':
         new_parser = HTMLParser()
         new_parser.in_comment = self.in_comment
+        new_parser.is_corrupted = self.is_corrupted
         return new_parser
 
     def reset(self):
         self.in_comment = False
+        self.is_corrupted = False
 
     def state_tuple(self) -> tuple:
-        return (self.in_comment,)
+        return (self.in_comment, self.is_corrupted)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -36,6 +39,13 @@ class HTMLParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
+        
+        # Check for binary control bytes (strictly illegal in HTML text contexts)
+        for b in data:
+            if b < 32 and b not in (9, 10, 13):
+                self.is_corrupted = True
+                return [], 0
+
         i = 0
         last_offset = 0
         n = len(data)

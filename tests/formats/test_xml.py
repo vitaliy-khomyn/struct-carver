@@ -1,5 +1,5 @@
 import unittest
-from struct_carver.formats.xml_parser import XMLParser
+from struct_carver.formats.text.xml_parser import XMLParser
 
 
 class TestXMLParser(unittest.TestCase):

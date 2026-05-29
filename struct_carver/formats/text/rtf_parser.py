@@ -1,21 +1,24 @@
 from typing import List, Tuple
-from .base import BaseFormatParser
+from ..base import BaseFormatParser
 
 
 class RTFParser(BaseFormatParser):
     def __init__(self):
         self.escape = False
+        self.is_corrupted = False
 
     def clone(self) -> 'RTFParser':
         new_parser = RTFParser()
         new_parser.escape = self.escape
+        new_parser.is_corrupted = self.is_corrupted
         return new_parser
 
     def reset(self):
         self.escape = False
+        self.is_corrupted = False
 
     def state_tuple(self) -> tuple:
-        return (self.escape,)
+        return (self.escape, self.is_corrupted)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -27,6 +30,12 @@ class RTFParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         tags = []
+        
+        # Check for binary control bytes (strictly illegal in RTF)
+        for b in data:
+            if b < 32 and b not in (9, 10, 13):
+                self.is_corrupted = True
+                return [], 0
         last_offset = 0
         for i, byte_val in enumerate(data):
             if self.escape:

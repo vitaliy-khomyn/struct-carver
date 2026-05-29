@@ -1,6 +1,6 @@
 import struct
 from typing import List, Tuple
-from .base import BaseFormatParser
+from ..base import BaseFormatParser
 
 
 class SQLiteWALParser(BaseFormatParser):

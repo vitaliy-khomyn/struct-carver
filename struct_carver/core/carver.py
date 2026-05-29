@@ -3,14 +3,36 @@ import json
 import zipfile
 from typing import List, Dict, Tuple, Optional, Any
 from tqdm import tqdm
-from struct_carver.formats.xml_parser import XMLParser
-from struct_carver.formats.html_parser import HTMLParser
-from struct_carver.formats.pdf_parser import PDFParser
-from struct_carver.formats.json_parser import JSONParser
-from struct_carver.formats.rtf_parser import RTFParser
-from struct_carver.formats.zip_parser import ZIPParser
-from struct_carver.formats.sqlite_parser import SQLiteParser
-from struct_carver.formats.sqlite_wal_parser import SQLiteWALParser
+from struct_carver.formats.text.xml_parser import XMLParser
+from struct_carver.formats.text.html_parser import HTMLParser
+from struct_carver.formats.binary.pdf_parser import PDFParser
+from struct_carver.formats.text.json_parser import JSONParser
+from struct_carver.formats.text.rtf_parser import RTFParser
+from struct_carver.formats.binary.zip_parser import ZIPParser
+from struct_carver.formats.binary.sqlite_parser import SQLiteParser
+from struct_carver.formats.binary.sqlite_wal_parser import SQLiteWALParser
+from struct_carver.formats.binary.jpg_parser import JPGParser
+from struct_carver.formats.binary.png_parser import PNGParser
+from struct_carver.formats.binary.gif_parser import GIFParser
+from struct_carver.formats.binary.bmp_parser import BMPParser
+from struct_carver.formats.binary.tiff_parser import TIFFParser
+from struct_carver.formats.binary.pcx_parser import PCXParser
+from struct_carver.formats.binary.wav_parser import WAVParser
+from struct_carver.formats.binary.mp3_parser import MP3Parser
+from struct_carver.formats.binary.au_parser import AUParser
+from struct_carver.formats.binary.wma_parser import WMAParser
+from struct_carver.formats.binary.wmv_parser import WMVParser
+from struct_carver.formats.binary.avi_parser import AVIParser
+from struct_carver.formats.binary.mp4_parser import MP4Parser
+from struct_carver.formats.binary.mov_parser import MOVParser
+from struct_carver.formats.binary.flv_parser import FLVParser
+from struct_carver.formats.binary.mpg_parser import MPGParser
+from struct_carver.formats.binary.seven_z_parser import SevenZParser
+from struct_carver.formats.binary.rar_parser import RARParser
+from struct_carver.formats.binary.gz_parser import GZParser
+from struct_carver.formats.binary.bz2_parser import BZ2Parser
+from struct_carver.formats.binary.tar_parser import TARParser
+from struct_carver.formats.binary.wim_parser import WIMParser
 from struct_carver.core.stack_engine import StackEngine
 from struct_carver.core.binary_engine import BinaryOffsetEngine
 from struct_carver.logger import setup_logger
@@ -99,7 +121,29 @@ class Carver:
             'rtf': RTFParser,
             'zip': ZIPParser,
             'sqlite': SQLiteParser,
-            'sqlitewal': SQLiteWALParser
+            'sqlitewal': SQLiteWALParser,
+            'jpg': JPGParser,
+            'png': PNGParser,
+            'gif': GIFParser,
+            'bmp': BMPParser,
+            'tiff': TIFFParser,
+            'pcx': PCXParser,
+            'wav': WAVParser,
+            'mp3': MP3Parser,
+            'au': AUParser,
+            'wma': WMAParser,
+            'wmv': WMVParser,
+            'avi': AVIParser,
+            'mp4': MP4Parser,
+            'mov': MOVParser,
+            'flv': FLVParser,
+            'mpg': MPGParser,
+            '7z': SevenZParser,
+            'rar': RARParser,
+            'gz': GZParser,
+            'bz2': BZ2Parser,
+            'tar': TARParser,
+            'wim': WIMParser,
         }
 
         if formats is None:
@@ -121,6 +165,12 @@ class Carver:
         cluster_lower = search_buffer.lower()
         for parser in self.parsers:
             is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
+            # If it's a text parser, ensure the cluster is actually text data to avoid false matches in binary streams
+            if not is_binary:
+                control_count = sum(1 for b in cluster if b < 32 and b not in (9, 10, 13)) + cluster.count(127)
+                if len(cluster) > 0 and (1.0 - (control_count / len(cluster))) < 0.95:
+                    continue  # Skip text parsers for this binary cluster
+
             target_buffer = search_buffer if is_binary else cluster_lower
             for sig in parser.header_signatures:
                 sig_to_search = sig if is_binary else sig.lower()
@@ -165,6 +215,8 @@ class Carver:
 
             tags, last_offset = parser.extract_tags(byte_data)
             engine.process_tags(tags)
+            if getattr(parser, 'is_corrupted', False):
+                engine.is_corrupted = True
             bytes_to_advance = last_offset - len(text_overlap)
             return tags, held_back_bytes, bytes_to_advance
 
@@ -235,16 +287,42 @@ class Carver:
         else:
             current_fragments.append({"start_offset": phys_start, "end_offset": phys_end, "size": phys_end - phys_start})
 
-    def _post_process_file(self, file_path: str, ext: str, logger: Any):
+    def _post_process_file(self, file_path: str, ext: str, output_dir: str, filename: str, logger: Any) -> Tuple[str, str]:
         """Handles format-specific post-processing after a file is successfully carved to disk."""
         if ext == "zip":
-            zip_out_dir = f"{file_path}_extracted"
+            detected_ext = "zip"
             try:
                 with zipfile.ZipFile(file_path, 'r') as zf:
-                    zf.extractall(zip_out_dir)
-                logger.info(f"Extracted DOCX/XLSX/ZIP contents to {zip_out_dir}")
+                    namelist = zf.namelist()
+                    if "word/document.xml" in namelist:
+                        detected_ext = "docx"
+                    elif "xl/workbook.xml" in namelist:
+                        detected_ext = "xlsx"
+                    elif "ppt/presentation.xml" in namelist:
+                        detected_ext = "pptx"
             except Exception as e:
-                logger.error(f"Recovered ZIP extraction failed: {e}")
+                logger.error(f"Failed to read ZIP structure for Office detection: {e}")
+                return ext, filename
+
+            if detected_ext != "zip":
+                new_filename = filename.rsplit('.', 1)[0] + f".{detected_ext}"
+                new_path = os.path.join(output_dir, new_filename)
+                try:
+                    if os.path.exists(file_path):
+                        os.rename(file_path, new_path)
+                    logger.info(f"Detected Office document. Renamed {filename} to {new_filename}")
+                    return detected_ext, new_filename
+                except Exception as e:
+                    logger.error(f"Failed to rename Office document: {e}")
+            else:
+                zip_out_dir = f"{file_path}_extracted"
+                try:
+                    with zipfile.ZipFile(file_path, 'r') as zf:
+                        zf.extractall(zip_out_dir)
+                    logger.info(f"Extracted ZIP contents to {zip_out_dir}")
+                except Exception as e:
+                    logger.error(f"Recovered ZIP extraction failed: {e}")
+        return ext, filename
 
     def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: int = None, worker_id: int = 0):
         os.makedirs(output_dir, exist_ok=True)
@@ -382,7 +460,10 @@ class Carver:
 
                                 # Trigger post-processing routines
                                 carved_file_path = os.path.join(output_dir, current_filename)
-                                self._post_process_file(carved_file_path, current_ext, logger)
+                                new_ext, new_filename = self._post_process_file(carved_file_path, current_ext, output_dir, current_filename, logger)
+                                if new_ext != current_ext:
+                                    report["files"][-1]["filename"] = new_filename
+                                    report["files"][-1]["format"] = new_ext
 
                                 file_id += 1
                                 carving = False
