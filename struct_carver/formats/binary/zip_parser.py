@@ -6,32 +6,64 @@ from ..base import BaseFormatParser
 class ZIPParser(BaseFormatParser):
     """
     Phase 3 Parser: Handles hierarchical binary ZIP formats (and DOCX/XLSX).
-    ZIP files contain multiple Local File Headers ('PK\\x03\\x04').
+    ZIP files contain multiple Local File Headers ('PK\x03\x04').
     To remain compatible with the StackEngine, this parser tracks an internal
     state and only pushes an opening tag on the first Local File Header,
-    and closes it when it encounters the End of Central Directory ('PK\\x05\\x06').
+    and closes it when it encounters the End of Central Directory ('PK\x05\x06').
     """
     engine_type = "binary"
 
     def __init__(self):
         self.is_open = False
+        self.header_verified = False
         self.in_data_descriptor = False
         self.compressed_bytes_processed = 0
+        
+        # State for handling split structures
+        self.pending_type = None
+        self.pending_bytes = bytearray()
+        self.bytes_to_skip = 0
+        self.pending_var_len = 0
+        self.lookbehind = b""
 
     def clone(self) -> 'ZIPParser':
         new_parser = ZIPParser()
         new_parser.is_open = self.is_open
+        new_parser.header_verified = self.header_verified
         new_parser.in_data_descriptor = self.in_data_descriptor
         new_parser.compressed_bytes_processed = self.compressed_bytes_processed
+        
+        new_parser.pending_type = self.pending_type
+        new_parser.pending_bytes = bytearray(self.pending_bytes)
+        new_parser.bytes_to_skip = self.bytes_to_skip
+        new_parser.pending_var_len = self.pending_var_len
+        new_parser.lookbehind = self.lookbehind
         return new_parser
 
     def reset(self):
         self.is_open = False
+        self.header_verified = False
         self.in_data_descriptor = False
         self.compressed_bytes_processed = 0
+        
+        self.pending_type = None
+        self.pending_bytes = bytearray()
+        self.bytes_to_skip = 0
+        self.pending_var_len = 0
+        self.lookbehind = b""
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.in_data_descriptor, self.compressed_bytes_processed)
+        return (
+            self.is_open,
+            self.header_verified,
+            self.in_data_descriptor,
+            self.compressed_bytes_processed,
+            self.pending_type,
+            bytes(self.pending_bytes),
+            self.bytes_to_skip,
+            self.pending_var_len,
+            self.lookbehind
+        )
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -45,6 +77,11 @@ class ZIPParser(BaseFormatParser):
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        result = self._analyze_binary_impl(data, bytes_remaining)
+        self.lookbehind = data[-3:] if len(data) >= 3 else data
+        return result
+
+    def _analyze_binary_impl(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         if not self.is_open:
             start_idx = data.find(b'PK\x03\x04')
             if start_idx != -1:
@@ -58,22 +95,126 @@ class ZIPParser(BaseFormatParser):
         idx = 0
         n = len(data)
 
-        # skip remaining bytes from a previously parsed, spanning chunk
-        if bytes_remaining > 0:
-            if n <= bytes_remaining:
-                return False, False, n, bytes_remaining - n
-            else:
-                idx = bytes_remaining
-                bytes_remaining = 0
+        # skip remaining bytes of payload/directory data
+        if self.bytes_to_skip > 0:
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
 
-        # If we are in the middle of scanning for a data descriptor from a previous chunk
+        L = len(self.lookbehind)
+        search_data = self.lookbehind + data
+
+        # Process any pending split structures
+        if self.pending_type is not None:
+            if self.pending_type == 'local_header':
+                target_len = 30
+            elif self.pending_type == 'local_header_full':
+                target_len = self.pending_var_len
+            elif self.pending_type == 'central_fixed':
+                target_len = 46
+            elif self.pending_type == 'central_var':
+                target_len = self.pending_var_len
+            elif self.pending_type == 'end_of_central':
+                target_len = 22
+            elif self.pending_type == 'data_descriptor':
+                target_len = 16
+            else:
+                target_len = 0
+
+            needed = target_len - len(self.pending_bytes)
+            if needed > 0:
+                take = min(n - idx, needed)
+                self.pending_bytes.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_bytes) < target_len:
+                    return False, False, n, target_len - len(self.pending_bytes)
+
+            accumulated_bytes = bytes(self.pending_bytes)
+            current_type = self.pending_type
+            self.pending_type = None
+            self.pending_bytes = bytearray()
+
+            if current_type == 'local_header':
+                flags = struct.unpack('<H', accumulated_bytes[6:8])[0]
+                has_data_descriptor = bool(flags & 0x0008)
+                comp_size = struct.unpack('<I', accumulated_bytes[18:22])[0]
+                fn_len, ef_len = struct.unpack('<HH', accumulated_bytes[26:30])
+
+                self.header_verified = True
+                total_header_len = 30 + fn_len + ef_len
+
+                if n - idx < fn_len + ef_len:
+                    self.pending_type = 'local_header_full'
+                    self.pending_bytes = bytearray(accumulated_bytes)
+                    self.pending_bytes.extend(data[idx:])
+                    self.pending_var_len = total_header_len
+                    idx = n
+                    return False, False, n, total_header_len - len(self.pending_bytes)
+                else:
+                    idx += fn_len + ef_len
+                    if has_data_descriptor:
+                        self.in_data_descriptor = True
+                        self.compressed_bytes_processed = 0
+                    else:
+                        self.bytes_to_skip = comp_size
+                        if idx < n:
+                            skip_amount = min(n - idx, self.bytes_to_skip)
+                            idx += skip_amount
+                            self.bytes_to_skip -= skip_amount
+
+            elif current_type == 'local_header_full':
+                flags = struct.unpack('<H', accumulated_bytes[6:8])[0]
+                has_data_descriptor = bool(flags & 0x0008)
+                comp_size = struct.unpack('<I', accumulated_bytes[18:22])[0]
+                fn_len, ef_len = struct.unpack('<HH', accumulated_bytes[26:30])
+
+                self.header_verified = True
+
+                if has_data_descriptor:
+                    self.in_data_descriptor = True
+                    self.compressed_bytes_processed = 0
+                else:
+                    self.bytes_to_skip = comp_size
+                    if idx < n:
+                        skip_amount = min(n - idx, self.bytes_to_skip)
+                        idx += skip_amount
+                        self.bytes_to_skip -= skip_amount
+
+            elif current_type == 'central_fixed':
+                fn_len, ef_len, fc_len = struct.unpack('<HHH', accumulated_bytes[28:34])
+                var_len = fn_len + ef_len + fc_len
+                self.bytes_to_skip = var_len
+                if idx < n:
+                    skip_amount = min(n - idx, self.bytes_to_skip)
+                    idx += skip_amount
+                    self.bytes_to_skip -= skip_amount
+
+            elif current_type == 'central_var':
+                pass
+
+            elif current_type == 'end_of_central':
+                return False, True, idx, 0
+
+            elif current_type == 'data_descriptor':
+                comp_size_from_desc = struct.unpack('<I', accumulated_bytes[8:12])[0]
+                if comp_size_from_desc == self.compressed_bytes_processed:
+                    self.in_data_descriptor = False
+                    self.compressed_bytes_processed = 0
+                else:
+                    self.compressed_bytes_processed += len(accumulated_bytes)
+
+        # If we are in the middle of scanning for a data descriptor
         if self.in_data_descriptor:
-            desc_idx = data.find(b'PK\x07\x08', idx)
+            start_search_from = idx + L if idx > 0 else 0
+            desc_idx_search = search_data.find(b'PK\x07\x08', start_search_from)
             found_valid = False
-            while desc_idx != -1:
-                if n - desc_idx >= 16:
-                    comp_size_from_desc = struct.unpack('<I', data[desc_idx + 8 : desc_idx + 12])[0]
-                    calculated_comp_size = self.compressed_bytes_processed + (desc_idx - idx)
+            while desc_idx_search != -1:
+                desc_idx = desc_idx_search - L
+                if len(search_data) - desc_idx_search >= 16:
+                    comp_size_from_desc = struct.unpack('<I', search_data[desc_idx_search + 8 : desc_idx_search + 12])[0]
+                    calculated_comp_size = self.compressed_bytes_processed + desc_idx
                     if comp_size_from_desc == calculated_comp_size:
                         idx = desc_idx + 16
                         self.in_data_descriptor = False
@@ -81,90 +222,100 @@ class ZIPParser(BaseFormatParser):
                         found_valid = True
                         break
                 else:
-                    # Need more bytes to validate the descriptor
-                    return False, False, n, 16 - (n - desc_idx)
-                desc_idx = data.find(b'PK\x07\x08', desc_idx + 1)
+                    self.pending_type = 'data_descriptor'
+                    self.pending_bytes = bytearray(search_data[desc_idx_search:])
+                    self.compressed_bytes_processed += desc_idx
+                    idx = n
+                    return False, False, n, 16 - len(self.pending_bytes)
+                desc_idx_search = search_data.find(b'PK\x07\x08', desc_idx_search + 1)
 
             if not found_valid:
-                # We haven't found the descriptor in this chunk.
-                # All bytes in this chunk after 'idx' are part of the compressed data.
                 self.compressed_bytes_processed += (n - idx)
                 return False, False, n, 0
 
         while idx < n:
-            # find the next relevant ZIP signature
-            next_local = data.find(b'PK\x03\x04', idx)
-            next_central = data.find(b'PK\x01\x02', idx)
-            next_end = data.find(b'PK\x05\x06', idx)
+            start_search_from = idx + L if idx > 0 else 0
+            next_local = search_data.find(b'PK\x03\x04', start_search_from)
+            next_central = search_data.find(b'PK\x01\x02', start_search_from)
+            next_end = search_data.find(b'PK\x05\x06', start_search_from)
 
-            valid_sigs = [p for p in [next_local, next_central, next_end] if p != -1]
-            if not valid_sigs:
-                if n - idx >= 4:
-                    return True, False, idx, 0
-                break  # waiting for more data to complete the block
+            valid_sigs_search = [p for p in [next_local, next_central, next_end] if p != -1]
+            if not valid_sigs_search:
+                if self.in_data_descriptor:
+                    self.compressed_bytes_processed += (n - idx)
+                    return False, False, n, 0
+                else:
+                    if n - idx >= 4:
+                        return True, False, idx, 0
+                    break
 
-            next_sig = min(valid_sigs)
+            next_sig_search = min(valid_sigs_search)
+            next_sig = next_sig_search - L
             if next_sig > idx:
-                return True, False, idx, 0
+                if self.in_data_descriptor:
+                    self.compressed_bytes_processed += (next_sig - idx)
+                    idx = next_sig
+                else:
+                    return True, False, idx, 0
 
-            if next_sig == next_end:
-                if n - next_sig >= 22:
-                    # 22 bytes is the minimum size of the End of Central Directory
+            if next_sig_search == next_end:
+                if len(search_data) - next_sig_search >= 22:
                     return False, True, next_sig + 22, 0
                 else:
-                    return False, False, n, 22 - (n - next_sig)
+                    self.pending_type = 'end_of_central'
+                    self.pending_bytes = bytearray(search_data[next_sig_search:])
+                    idx = n
+                    return False, False, n, 22 - len(self.pending_bytes)
 
-            elif next_sig == next_central:
-                if n - next_sig < 46:
-                    return False, False, n, 46 - (n - next_sig)
+            elif next_sig_search == next_central:
+                if len(search_data) - next_sig_search < 46:
+                    self.pending_type = 'central_fixed'
+                    self.pending_bytes = bytearray(search_data[next_sig_search:])
+                    idx = n
+                    return False, False, n, 46 - len(self.pending_bytes)
 
-                # unpack Central Directory File Header lengths
-                fn_len, ef_len, fc_len = struct.unpack('<HHH', data[next_sig+28:next_sig+34])
+                fn_len, ef_len, fc_len = struct.unpack('<HHH', search_data[next_sig_search + 28 : next_sig_search + 34])
                 total_size = 46 + fn_len + ef_len + fc_len
 
-                if n - next_sig < total_size:
-                    return False, False, n, total_size - (n - next_sig)
+                if len(search_data) - next_sig_search < total_size:
+                    self.pending_type = 'central_var'
+                    self.pending_bytes = bytearray(search_data[next_sig_search:])
+                    self.pending_var_len = total_size
+                    idx = n
+                    return False, False, n, total_size - len(self.pending_bytes)
                 idx = next_sig + total_size
 
-            elif next_sig == next_local:
-                if n - next_sig < 30:
-                    return False, False, n, 30 - (n - next_sig)
+            elif next_sig_search == next_local:
+                if len(search_data) - next_sig_search < 30:
+                    self.pending_type = 'local_header'
+                    self.pending_bytes = bytearray(search_data[next_sig_search:])
+                    idx = n
+                    return False, False, n, 30 - len(self.pending_bytes)
 
-                # check general purpose bit flag (offset 6) for data descriptor presence
-                flags = struct.unpack('<H', data[next_sig+6:next_sig+8])[0]
+                flags = struct.unpack('<H', search_data[next_sig_search + 6 : next_sig_search + 8])[0]
                 has_data_descriptor = bool(flags & 0x0008)
+                comp_size = struct.unpack('<I', search_data[next_sig_search + 18 : next_sig_search + 22])[0]
+                fn_len, ef_len = struct.unpack('<HH', search_data[next_sig_search + 26 : next_sig_search + 30])
 
-                # unpack Local File Header lengths to accurately skip compressed data
-                comp_size = struct.unpack('<I', data[next_sig+18:next_sig+22])[0]
-                fn_len, ef_len = struct.unpack('<HH', data[next_sig+26:next_sig+30])
+                self.header_verified = True
+                total_header_len = 30 + fn_len + ef_len
+                if len(search_data) - next_sig_search < total_header_len:
+                    self.pending_type = 'local_header_full'
+                    self.pending_bytes = bytearray(search_data[next_sig_search:])
+                    self.pending_var_len = total_header_len
+                    idx = n
+                    return False, False, n, total_header_len - len(self.pending_bytes)
 
+                idx = next_sig + total_header_len
                 if has_data_descriptor:
-                    header_end = next_sig + 30 + fn_len + ef_len
-                    # Look for the descriptor in the remaining part of this chunk
-                    desc_idx = data.find(b'PK\x07\x08', header_end)
-                    found_valid = False
-                    while desc_idx != -1:
-                        if n - desc_idx >= 16:
-                            comp_size_from_desc = struct.unpack('<I', data[desc_idx + 8 : desc_idx + 12])[0]
-                            calculated_comp_size = desc_idx - header_end
-                            if comp_size_from_desc == calculated_comp_size:
-                                idx = desc_idx + 16
-                                found_valid = True
-                                break
-                        else:
-                            return False, False, n, 16 - (n - desc_idx)
-                        desc_idx = data.find(b'PK\x07\x08', desc_idx + 1)
+                    self.in_data_descriptor = True
+                    self.compressed_bytes_processed = 0
+                else:
+                    self.bytes_to_skip = comp_size
+                    if idx < n:
+                        skip_amount = min(n - idx, self.bytes_to_skip)
+                        idx += skip_amount
+                        self.bytes_to_skip -= skip_amount
 
-                    if not found_valid:
-                        self.in_data_descriptor = True
-                        self.compressed_bytes_processed = n - header_end
-                        return False, False, n, 0
-                    continue
+        return False, False, n, self.bytes_to_skip
 
-                total_size = 30 + fn_len + ef_len + comp_size
-
-                if n - next_sig < total_size:
-                    return False, False, n, total_size - (n - next_sig)
-                idx = next_sig + total_size
-
-        return False, False, n, 0

@@ -9,19 +9,25 @@ class PNGParser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
         self.bytes_to_skip = 0
+        self.header_verified = False
+        self.pending_chunk = bytearray()
 
     def clone(self) -> 'PNGParser':
         new_parser = PNGParser()
         new_parser.is_open = self.is_open
         new_parser.bytes_to_skip = self.bytes_to_skip
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_chunk = bytearray(self.pending_chunk)
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.bytes_to_skip = 0
+        self.header_verified = False
+        self.pending_chunk = bytearray()
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.bytes_to_skip)
+        return (self.is_open, self.bytes_to_skip, self.header_verified, bytes(self.pending_chunk))
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -38,13 +44,6 @@ class PNGParser(BaseFormatParser):
         n = len(data)
         idx = 0
 
-        if bytes_remaining > 0:
-            if n <= bytes_remaining:
-                return False, False, n, bytes_remaining - n
-            else:
-                idx = bytes_remaining
-                bytes_remaining = 0
-
         if not self.is_open:
             start_idx = data.find(b'\x89PNG\r\n\x1a\n')
             if start_idx != -1:
@@ -54,36 +53,44 @@ class PNGParser(BaseFormatParser):
                 return True, False, 0, 0
 
         if self.bytes_to_skip > 0:
-            if n - idx <= self.bytes_to_skip:
-                self.bytes_to_skip -= (n - idx)
-                return False, False, n, 0
-            else:
-                idx += self.bytes_to_skip
-                self.bytes_to_skip = 0
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
 
         while idx < n:
-            # Need at least 8 bytes to parse a PNG chunk header (4-byte length + 4-byte type)
-            if n - idx < 8:
-                return False, False, idx, 8 - (n - idx)
+            if len(self.pending_chunk) < 8:
+                needed = 8 - len(self.pending_chunk)
+                take = min(n - idx, needed)
+                self.pending_chunk.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_chunk) < 8:
+                    return False, False, n, 8 - len(self.pending_chunk)
 
-            chunk_len = struct.unpack('>I', data[idx : idx + 4])[0]
-            chunk_type = data[idx + 4 : idx + 8]
+            chunk_hdr = bytes(self.pending_chunk)
+            chunk_len = struct.unpack('>I', chunk_hdr[0:4])[0]
+            chunk_type = chunk_hdr[4:8]
+
+            if chunk_type == b'IHDR' and chunk_len == 13:
+                self.header_verified = True
 
             # Standard safety check for chunk length to prevent corrupt buffers
             if chunk_len > 100 * 1024 * 1024:  # 100MB chunk safety limit
                 return True, False, 0, 0
 
-            # 8 bytes for length/type, chunk_len for data, 4 bytes for CRC
-            total_chunk_len = 8 + chunk_len + 4
-
             if chunk_type == b'IEND':
-                # The PNG ends exactly at the end of the IEND chunk (8 bytes + 0 data + 4 CRC = 12 bytes)
-                return False, True, idx + 12, 0
+                self.pending_chunk = bytearray()
+                return False, True, idx + 4, 0
 
-            if n - idx < total_chunk_len:
-                self.bytes_to_skip = total_chunk_len - (n - idx)
-                return False, False, n, 0
+            self.bytes_to_skip = chunk_len + 4
+            self.pending_chunk = bytearray()
 
-            idx += total_chunk_len
+            if self.bytes_to_skip > 0:
+                skip_amount = min(n - idx, self.bytes_to_skip)
+                idx += skip_amount
+                self.bytes_to_skip -= skip_amount
+                if self.bytes_to_skip > 0:
+                    return False, False, n, self.bytes_to_skip
 
         return False, False, n, 0

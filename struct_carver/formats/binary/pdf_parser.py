@@ -5,31 +5,37 @@ from ..base import BaseFormatParser
 
 class PDFParser(BaseFormatParser):
     engine_type = "binary"
+    # PDFs can be heavily fragmented across large images; allow searching the
+    # full image (10000 clusters = 40 MB) before giving up on a fragment.
+    max_gap_clusters = 10000
 
     def __init__(self):
         self.is_open = False
         self.length_pattern = re.compile(rb'/Length\s+(\d+)')
         self.pending_endstream = False
         self.pending_bytes_needed = 0
+        self.header_verified = False
 
     def clone(self) -> 'PDFParser':
         new_parser = PDFParser()
         new_parser.is_open = self.is_open
         new_parser.pending_endstream = self.pending_endstream
         new_parser.pending_bytes_needed = self.pending_bytes_needed
+        new_parser.header_verified = self.header_verified
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.pending_endstream = False
         self.pending_bytes_needed = 0
+        self.header_verified = False
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.pending_endstream, self.pending_bytes_needed)
+        return (self.is_open, self.pending_endstream, self.pending_bytes_needed, self.header_verified)
 
     @property
     def header_signatures(self) -> List[bytes]:
-        return [b'%pdf-']
+        return [b'%PDF-', b'%pdf-']
 
     @property
     def footer_signatures(self) -> List[bytes]:
@@ -37,6 +43,36 @@ class PDFParser(BaseFormatParser):
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         return [], 0
+
+    def gap_jump_verify(self, data: bytes) -> bool:
+        """Returns False if the cluster definitely belongs to another format.
+        Used by the gap-jump to reject clusters that start with a known
+        non-PDF binary signature.  Compressed PDF stream data has no
+        recognizable markers but should still be accepted as continuation."""
+        if len(data) < 4:
+            return True  # too short to judge
+        # Reject clusters that start with a definite non-PDF file signature
+        non_pdf_signatures = [
+            b'\xFF\xD8\xFF',           # JPEG
+            b'\x89PNG',                # PNG
+            b'PK\x03\x04',            # ZIP / DOCX / XLSX
+            b'PK\x05\x06',            # ZIP empty
+            b'Rar!',                   # RAR
+            b'RIFF',                   # WAV / AVI
+            b'\x1F\x8B',              # GZIP
+            b'BM',                     # BMP
+            b'\xFF\xFB', b'\xFF\xF3',  # MP3
+            b'ID3',                    # MP3 ID3
+            b'OggS',                   # OGG
+            b'\x00\x00\x00\x18ftyp',  # MP4
+            b'FLV',                    # FLV
+            b'GIF8',                   # GIF
+            b'II*\x00', b'MM\x00*',   # TIFF
+        ]
+        for sig in non_pdf_signatures:
+            if data.startswith(sig):
+                return False
+        return True  # unknown binary or PDF content — accept as continuation
 
     def _validate_endstream(self, data_to_parse: bytes) -> Tuple[bool, bytes]:
         """
@@ -83,6 +119,7 @@ class PDFParser(BaseFormatParser):
         if not self.is_open:
             if b'%pdf-' in data.lower():
                 self.is_open = True
+                self.header_verified = True
             else:
                 return True, False, 0, 0
 

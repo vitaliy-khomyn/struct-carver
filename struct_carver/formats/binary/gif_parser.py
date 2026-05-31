@@ -10,6 +10,8 @@ class GIFParser(BaseFormatParser):
         self.bytes_to_skip = 0
         self.in_blocks = False
         self.in_subblocks = False
+        self.header_verified = False
+        self.pending_header = bytearray()
 
     def clone(self) -> 'GIFParser':
         new_parser = GIFParser()
@@ -17,6 +19,8 @@ class GIFParser(BaseFormatParser):
         new_parser.bytes_to_skip = self.bytes_to_skip
         new_parser.in_blocks = self.in_blocks
         new_parser.in_subblocks = self.in_subblocks
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_header = bytearray(self.pending_header)
         return new_parser
 
     def reset(self):
@@ -24,9 +28,18 @@ class GIFParser(BaseFormatParser):
         self.bytes_to_skip = 0
         self.in_blocks = False
         self.in_subblocks = False
+        self.header_verified = False
+        self.pending_header = bytearray()
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.bytes_to_skip, self.in_blocks, self.in_subblocks)
+        return (
+            self.is_open,
+            self.bytes_to_skip,
+            self.in_blocks,
+            self.in_subblocks,
+            self.header_verified,
+            bytes(self.pending_header)
+        )
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -43,44 +56,42 @@ class GIFParser(BaseFormatParser):
         n = len(data)
         idx = 0
 
-        if bytes_remaining > 0:
-            if n <= bytes_remaining:
-                return False, False, n, bytes_remaining - n
-            else:
-                idx = bytes_remaining
-                bytes_remaining = 0
-
         if not self.is_open:
-            sig1 = data.find(b'GIF87a')
-            sig2 = data.find(b'GIF89a')
-            valid_sigs = [p for p in [sig1, sig2] if p != -1]
-            if not valid_sigs:
-                return True, False, 0, 0
-            
-            start_idx = min(valid_sigs)
-            self.is_open = True
-            
-            # Need at least 13 bytes for logical screen descriptor
-            if n - start_idx < 13:
-                return False, False, n, 13 - (n - start_idx)
+            if not self.pending_header:
+                sig1 = data.find(b'GIF87a')
+                sig2 = data.find(b'GIF89a')
+                valid_sigs = [p for p in [sig1, sig2] if p != -1]
+                if not valid_sigs:
+                    return True, False, 0, 0
+                idx = min(valid_sigs)
 
-            flags = data[start_idx + 10]
+            if len(self.pending_header) < 13:
+                needed = 13 - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < 13:
+                    return False, False, n, 13 - len(self.pending_header)
+
+            flags = self.pending_header[10]
             has_gct = bool(flags & 0x80)
             gct_size = 0
             if has_gct:
                 gct_size = 3 * (2 ** ((flags & 0x07) + 1))
             
-            self.bytes_to_skip = 13 + gct_size
+            self.bytes_to_skip = 13 + gct_size - 13
             self.in_blocks = True
-            idx = start_idx
+            self.header_verified = True
+            self.is_open = True
+            self.pending_header = bytearray()
 
         while idx < n:
             if self.bytes_to_skip > 0:
-                if n - idx <= self.bytes_to_skip:
-                    self.bytes_to_skip -= (n - idx)
-                    return False, False, n, 0
-                idx += self.bytes_to_skip
-                self.bytes_to_skip = 0
+                skip_amount = min(n - idx, self.bytes_to_skip)
+                idx += skip_amount
+                self.bytes_to_skip -= skip_amount
+                if self.bytes_to_skip > 0:
+                    return False, False, n, self.bytes_to_skip
 
             if self.in_subblocks:
                 if idx >= n:

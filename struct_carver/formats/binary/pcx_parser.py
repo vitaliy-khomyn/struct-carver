@@ -20,7 +20,10 @@ class PCXParser(BaseFormatParser):
         self.current_line = 0
         self.current_plane = 0
         self.decoded_bytes_in_current_line = 0
-        self.rle_offset = 128
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.pending_run_count = 0
+        self.bytes_to_skip = 0
 
     def clone(self) -> 'PCXParser':
         new_parser = PCXParser()
@@ -35,7 +38,10 @@ class PCXParser(BaseFormatParser):
         new_parser.current_line = self.current_line
         new_parser.current_plane = self.current_plane
         new_parser.decoded_bytes_in_current_line = self.decoded_bytes_in_current_line
-        new_parser.rle_offset = self.rle_offset
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_header = bytearray(self.pending_header)
+        new_parser.pending_run_count = self.pending_run_count
+        new_parser.bytes_to_skip = self.bytes_to_skip
         return new_parser
 
     def reset(self):
@@ -44,7 +50,10 @@ class PCXParser(BaseFormatParser):
         self.current_line = 0
         self.current_plane = 0
         self.decoded_bytes_in_current_line = 0
-        self.rle_offset = 128
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.pending_run_count = 0
+        self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
         return (
@@ -53,13 +62,23 @@ class PCXParser(BaseFormatParser):
             self.current_line,
             self.current_plane,
             self.decoded_bytes_in_current_line,
-            self.rle_offset
+            self.header_verified,
+            bytes(self.pending_header),
+            self.pending_run_count,
+            self.bytes_to_skip
         )
 
     @property
     def header_signatures(self) -> List[bytes]:
-        # PCX header starts with 0x0A (Manufacturer)
-        return [b'\x0A']
+        # PCX header starts with 0x0A (Manufacturer) + Version + 0x01 (Encoding)
+        # Valid versions: 0, 2, 3, 4, 5
+        return [
+            b'\x0A\x00\x01',
+            b'\x0A\x02\x01',
+            b'\x0A\x03\x01',
+            b'\x0A\x04\x01',
+            b'\x0A\x05\x01'
+        ]
 
     @property
     def footer_signatures(self) -> List[bytes]:
@@ -72,21 +91,27 @@ class PCXParser(BaseFormatParser):
         n = len(data)
         idx = 0
 
-        # PCX parser handles scanning internally rather than using engine bytes_remaining
         if not self.is_open:
-            start_idx = data.find(b'\x0A')
-            if start_idx != -1:
-                self.is_open = True
+            if not self.pending_header:
+                start_idx = -1
+                for sig in self.header_signatures:
+                    pos = data.find(sig)
+                    if pos != -1:
+                        start_idx = pos
+                        break
+                if start_idx == -1:
+                    return True, False, 0, 0
                 idx = start_idx
-            else:
-                return True, False, 0, 0
 
-        # Parse PCX Header (128 bytes)
-        if not self.header_parsed:
-            if n - idx < 128:
-                return False, False, idx, 128 - (n - idx)
+            if len(self.pending_header) < 128:
+                needed = 128 - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < 128:
+                    return False, False, n, 128 - len(self.pending_header)
 
-            header = data[idx : idx + 128]
+            header = bytes(self.pending_header)
             manufacturer = header[0]
             self.version = header[1]
             encoding = header[2]
@@ -95,7 +120,6 @@ class PCXParser(BaseFormatParser):
             self.n_planes = header[65]
             self.bytes_per_line = struct.unpack('<H', header[66:68])[0]
 
-            # Validation checks
             self.width = xmax - xmin + 1
             self.height = ymax - ymin + 1
 
@@ -109,39 +133,47 @@ class PCXParser(BaseFormatParser):
                 self.width > 32768 or self.height > 32768):
                 return True, False, 0, 0
 
+            self.is_open = True
             self.header_parsed = True
+            self.header_verified = True
             self.current_line = 0
             self.current_plane = 0
             self.decoded_bytes_in_current_line = 0
-            self.rle_offset = idx + 128
+            self.pending_header = bytearray()
 
-        # RLE decoding loop
-        idx = self.rle_offset
+        if self.bytes_to_skip > 0:
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
+
         total_needed_planes = self.height * self.n_planes
 
         while (self.current_line * self.n_planes + self.current_plane) < total_needed_planes:
             if idx >= n:
-                self.rle_offset = idx
                 return False, False, n, 0
 
-            b = data[idx]
-            if (b & 0xC0) == 0xC0:
-                # Run count
-                if idx + 1 >= n:
-                    # Need the value byte in the next chunk
-                    self.rle_offset = idx
-                    return False, False, idx, 2
-                run_count = b & 0x3F
-                idx += 2
+            if self.pending_run_count > 0:
+                run_count = self.pending_run_count
+                self.pending_run_count = 0
+                idx += 1  # Skip the value byte (which is at data[idx])
             else:
-                run_count = 1
-                idx += 1
+                b = data[idx]
+                if (b & 0xC0) == 0xC0:
+                    run_count = b & 0x3F
+                    if idx + 1 >= n:
+                        self.pending_run_count = run_count
+                        idx += 1
+                        return False, False, n, 1
+                    idx += 2
+                else:
+                    run_count = 1
+                    idx += 1
 
             self.decoded_bytes_in_current_line += run_count
 
-            # If we completed or overflowed the line width
             while self.decoded_bytes_in_current_line >= self.bytes_per_line:
-                # Move to next plane/line
                 self.decoded_bytes_in_current_line -= self.bytes_per_line
                 self.current_plane += 1
                 if self.current_plane >= self.n_planes:
@@ -151,18 +183,14 @@ class PCXParser(BaseFormatParser):
                 if (self.current_line * self.n_planes + self.current_plane) >= total_needed_planes:
                     break
 
-        # Check for optional 256-color palette (version 5, 8 bits per pixel)
         if self.version == 5 and self.bits_per_pixel == 8 and self.n_planes == 1:
             if idx >= n:
-                self.rle_offset = idx
-                return False, False, n, 769  # Palette needs 1 byte marker + 768 bytes
+                return False, False, n, 769
 
-            # The palette is preceded by a 0x0C byte
             if data[idx] == 0x0C:
                 if n - idx < 769:
-                    self.rle_offset = idx
-                    return False, False, idx, 769 - (n - idx)
+                    self.bytes_to_skip = 769 - (n - idx)
+                    return False, False, n, self.bytes_to_skip
                 idx += 769
-            # If the 0x0C is missing, then there is no palette, we finish at idx
 
         return False, True, idx, 0

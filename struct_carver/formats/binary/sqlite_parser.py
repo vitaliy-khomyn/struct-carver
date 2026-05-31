@@ -9,16 +9,34 @@ class SQLiteParser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
         self.total_size = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.bytes_to_skip = 0
 
     def clone(self) -> 'SQLiteParser':
         new_parser = SQLiteParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_header = bytearray(self.pending_header)
+        new_parser.bytes_to_skip = self.bytes_to_skip
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.total_size = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.bytes_to_skip = 0
+
+    def state_tuple(self) -> tuple:
+        return (
+            self.is_open,
+            self.total_size,
+            self.header_verified,
+            bytes(self.pending_header),
+            self.bytes_to_skip
+        )
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -33,43 +51,52 @@ class SQLiteParser(BaseFormatParser):
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         n = len(data)
+        idx = 0
 
         if not self.is_open:
-            start_idx = data.find(b'SQLite format 3\x00')
-            if start_idx != -1:
-                # needs at least 32 bytes to safely read the page size and page count
-                if n - start_idx < 32:
-                    return False, False, n, 32 - (n - start_idx)
+            if not self.pending_header:
+                start_idx = data.find(b'SQLite format 3\x00')
+                if start_idx == -1:
+                    return True, False, 0, 0
+                idx = start_idx
 
-                self.is_open = True
+            if len(self.pending_header) < 32:
+                needed = 32 - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < 32:
+                    return False, False, n, 32 - len(self.pending_header)
 
-                # SQLite uses big-endian (>H for unsigned short, >I for unsigned int)
-                header_block = data[start_idx:start_idx + 32]
-                page_size = struct.unpack('>H', header_block[16:18])[0]
-                num_pages = struct.unpack('>I', header_block[28:32])[0]
+            # Process 32-byte header
+            header_block = bytes(self.pending_header[:32])
+            page_size = struct.unpack('>H', header_block[16:18])[0]
+            num_pages = struct.unpack('>I', header_block[28:32])[0]
 
-                if page_size == 1:
-                    page_size = 65536  # SQLite specifies that a value of 1 means 65536 bytes
+            if page_size == 1:
+                page_size = 65536  # SQLite specifies that a value of 1 means 65536 bytes
 
-                if page_size == 0 or num_pages == 0:
-                    return True, False, 0, 0  # Header is corrupted
+            if page_size == 0 or num_pages == 0:
+                return True, False, 0, 0  # Header is corrupted
 
-                self.total_size = page_size * num_pages
-                bytes_remaining = self.total_size - (n - start_idx)
-
-                if bytes_remaining <= 0:
-                    return False, True, start_idx + self.total_size, 0
-
-                return False, False, n, bytes_remaining
-            else:
+            self.total_size = page_size * num_pages
+            
+            # Safety check
+            if self.total_size > 10 * 1024 * 1024 * 1024:
                 return True, False, 0, 0
 
-        if bytes_remaining > 0:
-            if n >= bytes_remaining:
-                # the file is completely finished within this chunk!
-                return False, True, bytes_remaining, 0
-            else:
-                # still need more chunks, subtract what we have
-                return False, False, n, bytes_remaining - n
+            self.is_open = True
+            self.header_verified = True
+            
+            self.pending_header = bytearray()
+            self.bytes_to_skip = self.total_size - 32
 
-        return False, False, n, 0
+        # Skip bytes
+        if self.bytes_to_skip > 0:
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
+
+        return False, True, idx, 0

@@ -144,6 +144,10 @@ class Carver:
             'bz2': BZ2Parser,
             'tar': TARParser,
             'wim': WIMParser,
+            'docx': ZIPParser,
+            'xlsx': ZIPParser,
+            'pptx': ZIPParser,
+            'tif': TIFFParser,
         }
 
         if formats is None:
@@ -159,16 +163,27 @@ class Carver:
 
         # dynamically build the reverse lookup map for file extensions
         self.ext_map = {cls: fmt for fmt, cls in AVAILABLE_PARSERS.items()}
+        self.ext_map[ZIPParser] = "zip"
+        self.ext_map[TIFFParser] = "tiff"
 
     def _detect_header(self, cluster: bytes, prev_overlap: bytes, file_id: int, output_dir: str, worker_id: int) -> Tuple[bool, Optional[Any], Optional[Any], Optional[Any], bytes]:
         search_buffer = prev_overlap + cluster
         cluster_lower = search_buffer.lower()
+
+        best_idx = None
+        best_parser = None
+        best_is_binary = None
+        best_sig_len = 0
+
         for parser in self.parsers:
             is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
             # If it's a text parser, ensure the cluster is actually text data to avoid false matches in binary streams
             if not is_binary:
-                control_count = sum(1 for b in cluster if b < 32 and b not in (9, 10, 13)) + cluster.count(127)
-                if len(cluster) > 0 and (1.0 - (control_count / len(cluster))) < 0.95:
+                stripped_cluster = cluster.rstrip(b'\x00')
+                if len(stripped_cluster) == 0:
+                    continue
+                control_count = sum(1 for b in stripped_cluster if b < 32 and b not in (9, 10, 13)) + stripped_cluster.count(127)
+                if (1.0 - (control_count / len(stripped_cluster))) < 0.95:
                     continue  # Skip text parsers for this binary cluster
 
             target_buffer = search_buffer if is_binary else cluster_lower
@@ -176,20 +191,33 @@ class Carver:
                 sig_to_search = sig if is_binary else sig.lower()
                 idx = target_buffer.find(sig_to_search)
                 if idx != -1:
-                    parser.reset()
-                    if is_binary:
-                        engine = BinaryOffsetEngine()
-                    else:
-                        engine = StackEngine()
+                    if best_idx is None or idx < best_idx:
+                        best_idx = idx
+                        best_parser = parser
+                        best_is_binary = is_binary
+                        best_sig_len = len(sig)
+                    elif idx == best_idx:
+                        if len(sig) > best_sig_len:
+                            best_parser = parser
+                            best_is_binary = is_binary
+                            best_sig_len = len(sig)
 
-                    # Slice the search buffer to begin exactly at the matching signature
-                    search_buffer = search_buffer[idx:]
+        if best_idx is not None:
+            best_parser.reset()
+            if best_is_binary:
+                engine = BinaryOffsetEngine()
+            else:
+                engine = StackEngine()
 
-                    ext = getattr(parser, 'ext', self.ext_map.get(type(parser), "bin"))
-                    out_path = os.path.join(output_dir, f"carved_w{worker_id}_{file_id}.{ext}")
-                    handle = open(out_path, 'wb')
-                    return True, parser, engine, handle, search_buffer
-        return False, None, None, None, cluster
+            # Slice the search buffer to begin exactly at the matching signature
+            search_buffer = search_buffer[best_idx:]
+
+            ext = getattr(best_parser, 'ext', self.ext_map.get(type(best_parser), "bin"))
+            out_path = os.path.join(output_dir, f"carved_w{worker_id}_{file_id}.{ext}")
+            handle = open(out_path, 'wb')
+            return True, best_parser, engine, handle, search_buffer, best_idx
+
+        return False, None, None, None, cluster, -1
 
     def _process_cluster(self, cluster: bytes, parser: Any, engine: Any, text_overlap: bytes = b"") -> Tuple[List[Any], bytes, int]:
         is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
@@ -198,6 +226,7 @@ class Carver:
             engine.process_binary(is_corr, is_comp, expected_remaining)
             return ["binary_chunk"], b"", bytes_to_advance
         else:
+            cluster = cluster.rstrip(b'\x00')
             search_buffer = text_overlap + cluster
             byte_data = search_buffer
 
@@ -221,8 +250,11 @@ class Carver:
             return tags, held_back_bytes, bytes_to_advance
 
     def _attempt_gap_jump(self, f: Any, snapshot: Any, parser_snapshot: Any, file_id: int, current_text_overlap: bytes, logger: Any) -> Tuple[bool, Any, Any, List[Any], bytes, int, bytes, int, int]:
-        logger.warning(f"Fragmentation detected in file {file_id}. Initiating gap-jumping search...")
-        max_search_clusters = getattr(self, 'max_search_clusters', 1000)
+        parser_name = type(parser_snapshot).__name__
+        logger.warning(f"Fragmentation detected in file {file_id} ({parser_name}) at offset {f.tell()}. Initiating gap-jumping search...")
+        global_limit = getattr(self, 'max_search_clusters', 1000)
+        parser_limit = getattr(type(parser_snapshot), 'max_gap_clusters', 0)
+        max_search_clusters = max(global_limit, parser_limit)
         search_count = 0
         original_pos = f.tell()
         is_binary = getattr(parser_snapshot, 'engine_type', 'semantic') == 'binary'
@@ -232,16 +264,20 @@ class Carver:
             candidate_cluster = f.read(self.cluster_size)
             cand_end = f.tell()
             if not candidate_cluster:
+                logger.info(f"Gap-jumping reached EOF at offset {cand_start} after checking {search_count} clusters.")
                 break
 
             # Cache key can now be used for both binary and text parsers
             cache_key = (cand_start, type(parser_snapshot), parser_snapshot.state_tuple(), current_text_overlap)
 
             if cache_key in self.cluster_cache:
-                candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, cached_parser = self.cluster_cache[cache_key]
+                candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, cached_parser, engine_state = self.cluster_cache[cache_key]
                 test_engine = snapshot.clone()
                 test_parser = cached_parser.clone()
-                test_engine.process_tags(candidate_tags)
+                if is_binary:
+                    test_engine.process_binary(*engine_state)
+                else:
+                    test_engine.process_tags(candidate_tags)
             else:
                 is_text_heavy = False
                 if not is_binary:
@@ -259,19 +295,47 @@ class Carver:
 
                 test_engine = snapshot.clone()
                 test_parser = parser_snapshot.clone()
+
+                # Prepare the parser and engine for gap-jump testing.
+                # Mid-stream state (pending_endstream, bytes_remaining) would
+                # cause parsers like PDFParser to expect the cluster to continue
+                # a specific byte sequence from the fragmentation point — but
+                # candidate clusters are independent disk fragments, so we must
+                # test them from a clean object-boundary perspective.
+                if is_binary:
+                    # Reset any "waiting for endstream / next N bytes" flags.
+                    if hasattr(test_parser, 'pending_endstream'):
+                        test_parser.pending_endstream = False
+                        test_parser.pending_bytes_needed = 0
+                    # bytes_remaining=-1 is PDF's "search for endstream" mode;
+                    # 0 means "look for next object/stream keyword".
+                    # Reset to 0 so the parser scans for structure from scratch.
+                    test_engine.bytes_remaining = 0
+                    # Start with a clean corruption flag so process_binary
+                    # reflects the candidate result, not the snapshot state.
+                    test_engine.is_corrupted = False
+
                 candidate_tags, new_overlap, bytes_to_advance = self._process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
 
                 if len(self.cluster_cache) > 100000:
                     self.cluster_cache.clear()
-                self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone())
+                
+                engine_state = (test_engine.is_corrupted, test_engine.is_complete, test_engine.bytes_remaining) if is_binary else None
+                self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone(), engine_state)
 
             if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy or is_binary):
-                logger.info(f"Found valid continuation after {search_count + 1} clusters!")
+                # Allow parsers to enforce stronger content checks on candidate clusters
+                # via an optional gap_jump_verify(data) method.
+                verify_fn = getattr(test_parser, 'gap_jump_verify', None)
+                if verify_fn is not None and not verify_fn(candidate_cluster):
+                    search_count += 1
+                    continue
+                logger.info(f"Found valid continuation for file {file_id} after {search_count + 1} clusters at offset {cand_start}!")
                 return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end
 
             search_count += 1
 
-        logger.error(f"Search failed. Aborting recovery for file {file_id}.")
+        logger.error(f"Search failed for file {file_id} ({parser_name}) after checking {search_count} clusters. Aborting recovery.")
         f.seek(original_pos)
         return False, snapshot, parser_snapshot, [], b"", 0, b"", -1, -1
 
@@ -372,17 +436,19 @@ class Carver:
                             break
 
                         just_started = False
+                        raw_cluster = cluster  # save original before potential slicing
                         if not carving:
                             # 2. search for the beginning of a file
-                            carving, active_parser, engine, current_file_handle, search_buffer = self._detect_header(
+                            carving, active_parser, engine, current_file_handle, search_buffer, best_idx = self._detect_header(
                                 cluster, prev_overlap, file_id, output_dir, worker_id
                             )
                             if carving:
+                                overlap_len = len(search_buffer) - (phys_end - phys_start)
+                                adj_start = phys_start - overlap_len
+
                                 cluster = search_buffer
                                 carve_text_overlap = b""
 
-                                overlap_len = len(search_buffer) - (phys_end - phys_start)
-                                adj_start = phys_start - overlap_len
                                 current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
                                 current_ext = getattr(active_parser, 'ext', self.ext_map.get(type(active_parser), "bin"))
                                 current_filename = f"carved_w{worker_id}_{file_id}.{current_ext}"
@@ -394,6 +460,7 @@ class Carver:
                             if not just_started:
                                 self._record_fragment(current_fragments, phys_start, phys_end)
 
+                            # 3. process cluster data
                             snapshot = engine.clone()
                             parser_snapshot = active_parser.clone()
                             tags, carve_text_overlap, bytes_to_advance = self._process_cluster(cluster, active_parser, engine, carve_text_overlap)
@@ -401,6 +468,38 @@ class Carver:
                             cluster_to_write = cluster
                             # 4. determine state
                             if engine.is_corrupted:
+                                if not getattr(active_parser, 'header_verified', True):
+                                    # Discard false positive signature match immediately
+                                    carving = False
+                                    active_parser = None
+                                    if current_file_handle:
+                                        current_file_handle.close()
+                                        current_file_handle = None
+                                        old_path = os.path.join(output_dir, current_filename)
+                                        if os.path.exists(old_path):
+                                            os.remove(old_path)
+
+                                    # Seek to the byte right after the false signature's position
+                                    # in the current cluster so the bytes that follow it are still
+                                    # scanned for real headers.  best_idx is relative to
+                                    # (orig_prev_overlap + raw_cluster), so we subtract the
+                                    # overlap length to find the offset within raw_cluster.
+                                    overlap_len_orig = len(prev_overlap)
+                                    sig_in_cluster = best_idx - overlap_len_orig
+                                    if sig_in_cluster >= 0:
+                                        # False sig is inside the current cluster; seek past it.
+                                        next_scan = phys_start + sig_in_cluster + 1
+                                        f.seek(next_scan)
+                                        # prev_overlap covers the bytes just before the false sig
+                                        # so any header straddling the new read boundary is caught.
+                                        pre_sig = raw_cluster[:sig_in_cluster]
+                                        prev_overlap = pre_sig[-overlap_size:] if overlap_size > 0 else b""
+                                    else:
+                                        # False sig was in the previous-cluster overlap area;
+                                        # just continue from the next full cluster naturally.
+                                        prev_overlap = raw_cluster[-overlap_size:] if overlap_size > 0 else b""
+                                    continue
+
                                 found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end = self._attempt_gap_jump(
                                     f, snapshot, parser_snapshot, file_id, carve_text_overlap, logger
                                 )
@@ -409,6 +508,18 @@ class Carver:
                                     active_parser = new_parser
                                     carve_text_overlap = new_overlap
                                     cluster_to_write = candidate_cluster
+                                    # The cluster that triggered corruption is VALID file data
+                                    # (it contains stream bytes; the "corruption" is just an
+                                    # endstream-marker mismatch, not bad disk content).
+                                    # Write it first so no file bytes are silently dropped.
+                                    if current_file_handle:
+                                        current_file_handle.write(cluster)
+                                    # Zero-fill the true inter-fragment gap:
+                                    # phys_end is the end of the just-written cluster;
+                                    # cand_start is where the valid continuation begins.
+                                    gap_bytes = cand_start - phys_end
+                                    if gap_bytes > 0 and current_file_handle:
+                                        current_file_handle.write(b'\x00' * gap_bytes)
                                     current_fragments.append({"start_offset": cand_start, "end_offset": cand_end, "size": cand_end - cand_start})
                                 else:
                                     carving = False
@@ -433,6 +544,7 @@ class Carver:
                                         "total_size": sum(f["size"] for f in current_fragments)
                                     })
                                     file_id += 1
+                                    prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
                                     continue
 
                             # check for completion
@@ -471,6 +583,10 @@ class Carver:
                                 prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
                             else:
                                 current_file_handle.write(cluster_to_write)
+                except Exception as e:
+                    logger.error(f"Worker {worker_id} crashed during carving: {e}", exc_info=True)
+                    report["error"] = str(e)
+                    raise
                 finally:
                     pbar.close()
                     # ensure final file handle is closed if the image ends prematurely or an exception occurs
@@ -492,10 +608,13 @@ class Carver:
                             "total_size": sum(f["size"] for f in current_fragments)
                         })
 
-                report_path = os.path.join(output_dir, f"carve_report_w{worker_id}.json")
-                with open(report_path, "w") as f_report:
-                    json.dump(report, f_report, indent=4)
-                logger.info(f"Forensic carve report saved to {report_path}")
+                    report_path = os.path.join(output_dir, f"carve_report_w{worker_id}.json")
+                    try:
+                        with open(report_path, "w") as f_report:
+                            json.dump(report, f_report, indent=4)
+                        logger.info(f"Forensic carve report saved to {report_path}")
+                    except Exception as save_err:
+                        logger.error(f"Failed to save report: {save_err}", exc_info=True)
         finally:
             for handler in logger.handlers[:]:
                 handler.close()

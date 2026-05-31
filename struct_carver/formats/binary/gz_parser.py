@@ -10,19 +10,22 @@ class GZParser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
         self.accumulated_data = b""
+        self.header_verified = False
 
     def clone(self) -> 'GZParser':
         new_parser = GZParser()
         new_parser.is_open = self.is_open
         new_parser.accumulated_data = self.accumulated_data
+        new_parser.header_verified = self.header_verified
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.accumulated_data = b""
+        self.header_verified = False
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, len(self.accumulated_data))
+        return (self.is_open, len(self.accumulated_data), self.header_verified)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -48,6 +51,7 @@ class GZParser(BaseFormatParser):
             else:
                 return True, False, 0, 0
 
+        prev_accum_len = len(self.accumulated_data)
         # Accumulate data
         self.accumulated_data += data[idx:]
 
@@ -55,13 +59,14 @@ class GZParser(BaseFormatParser):
             # wbits = 16 + MAX_WBITS (15) enables automated GZIP header and footer detection
             decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
             decompressor.decompress(self.accumulated_data)
+            self.header_verified = True
             
             if decompressor.eof:
                 unused_len = len(decompressor.unused_data)
                 total_size = len(self.accumulated_data) - unused_len
                 # Reset accumulated data to match the exact size
                 self.accumulated_data = self.accumulated_data[:total_size]
-                return False, True, idx + total_size, 0
+                return False, True, idx + (total_size - prev_accum_len), 0
             else:
                 return False, False, n, 0
         except zlib.error:

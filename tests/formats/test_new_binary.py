@@ -55,7 +55,7 @@ class TestNewBinaryParsers(unittest.TestCase):
     def test_wav_parser(self):
         parser = WAVParser()
         # RIFF size = 4 (for 'WAVE') + 8 (for subchunk) + 12 (data) = 24
-        data = b'RIFF' + struct.pack('<I', 24) + b'WAVE' + b'subc' + struct.pack('<I', 4) + b'1234'
+        data = b'RIFF' + struct.pack('<I', 24) + b'WAVE' + b'subc' + struct.pack('<I', 12) + b'123456789012'
         is_corr, is_comp, adv, rem = parser.analyze_binary(data)
         self.assertFalse(is_corr)
         self.assertTrue(is_comp)
@@ -68,7 +68,8 @@ class TestNewBinaryParsers(unittest.TestCase):
         id3_header = b'ID3\x03\x00\x00\x00\x00\x00\x0A' + b'A' * 10
         # Frame Header: Sync (0xFF, 0xFB = Layer III), Bitrate index 9 (128kbps), Sample Rate index 0 (44100Hz), Padding 0
         # Version 3 (MPEG 1), Layer 1 (Layer III) -> frame size = 144 * 128000 // 44100 = 417 bytes
-        frame_header = b'\xFF\xFB\x90\x64' + b'\x00' * 413
+        # We need at least 4 frames to satisfy the validation threshold
+        frame_header = (b'\xFF\xFB\x90\x64' + b'\x00' * 413) * 4
         # ID3v1 Tag: 'TAG' + 125 bytes
         id3v1_tag = b'TAG' + b'B' * 125
 
@@ -91,35 +92,47 @@ class TestNewBinaryParsers(unittest.TestCase):
         wma = WMAParser()
         wmv = WMVParser()
 
-        # Header Object GUID: 30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C (16 bytes)
-        # Header size: 120 bytes (8 bytes)
+        # ASF Header Object GUID (16 bytes) + header size (8 bytes) + reserved (6 bytes)
         hdr_guid = b'\x30\x26\xB2\x75\x8E\x66\xCF\x11\xA6\xD9\x00\xAA\x00\x62\xCE\x6C'
-        header_obj = hdr_guid + struct.pack('<Q', 120) + b'\x00' * 6
 
-        # File Properties Object GUID: A1 5F C1 8C 85 4F D0 11 AC B0 00 A0 C9 03 49 BE (16 bytes)
-        # Size: 104 bytes (8 bytes)
-        # Client ID: 16 bytes
-        # File Size: 1000 bytes (8 bytes)
+        # File Properties Object GUID + size 104 + client_id (16) + file_size (1000) + padding
         fp_guid = b'\xA1\x5F\xC1\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
         fp_obj = fp_guid + struct.pack('<Q', 104) + b'\x00' * 16 + struct.pack('<Q', 1000)
-        # Pad FP to 104 bytes
         fp_obj += b'\x00' * (104 - len(fp_obj))
 
-        data = header_obj + fp_obj + b'\x00' * (120 - len(header_obj) - len(fp_obj))
-        # Add padding to reach file size 1000
-        data += b'\x00' * (1000 - len(data))
+        # --- WMA data: audio-only ASF (no video stream GUID) ---
+        # ASF_Audio_Media GUID (little-endian): F8699E40-5B4D-11CF-A8FD-00805F5C442B
+        audio_stream_guid = b'\x40\x9E\x69\xF8\x4D\x5B\xCF\x11\xA8\xFD\x00\x80\x5F\x5C\x44\x2B'
+        header_size_wma = 16 + 8 + 6 + len(fp_obj) + len(audio_stream_guid)
+        header_obj_wma = hdr_guid + struct.pack('<Q', header_size_wma) + b'\x00' * 6
+        wma_data = header_obj_wma + fp_obj + audio_stream_guid
+        wma_data += b'\x00' * (1000 - len(wma_data))
 
-        # Test WMA
-        is_corr, is_comp, adv, rem = wma.analyze_binary(data)
-        self.assertFalse(is_corr)
+        # WMAParser should successfully parse the audio-only ASF file
+        is_corr, is_comp, adv, rem = wma.analyze_binary(wma_data)
+        self.assertFalse(is_corr, "WMAParser should accept audio-only ASF data")
         self.assertTrue(is_comp)
         self.assertEqual(adv, 1000)
 
-        # Test WMV
-        is_corr, is_comp, adv, rem = wmv.analyze_binary(data)
-        self.assertFalse(is_corr)
-        self.assertTrue(is_comp)
-        self.assertEqual(adv, 1000)
+        # WMVParser should reject audio-only ASF (no video stream GUID)
+        wmv2 = WMVParser()
+        is_corr2, is_comp2, adv2, rem2 = wmv2.analyze_binary(wma_data)
+        self.assertTrue(is_corr2, "WMVParser should reject audio-only ASF data")
+
+        # --- WMV data: ASF with video stream GUID ---
+        # ASF_Video_Media GUID (little-endian): BC19EFC0-5B4D-11CF-A8FD-00805F5C442B
+        video_stream_guid = b'\xC0\xEF\x19\xBC\x4D\x5B\xCF\x11\xA8\xFD\x00\x80\x5F\x5C\x44\x2B'
+        header_size_wmv = 16 + 8 + 6 + len(fp_obj) + len(video_stream_guid)
+        header_obj_wmv = hdr_guid + struct.pack('<Q', header_size_wmv) + b'\x00' * 6
+        wmv_data = header_obj_wmv + fp_obj + video_stream_guid
+        wmv_data += b'\x00' * (1000 - len(wmv_data))
+
+        # WMVParser should accept data with video stream GUID
+        wmv3 = WMVParser()
+        is_corr3, is_comp3, adv3, rem3 = wmv3.analyze_binary(wmv_data)
+        self.assertFalse(is_corr3, "WMVParser should accept ASF data with video stream GUID")
+        self.assertTrue(is_comp3)
+        self.assertEqual(adv3, 1000)
 
     def test_avi_parser(self):
         parser = AVIParser()
@@ -198,9 +211,9 @@ class TestNewBinaryParsers(unittest.TestCase):
         parser = RARParser()
         # RAR4: Rar!\x1a\x07\x00
         # Block 1 (Archive Header): CRC (2), Type (0x73), Flags (0), Size (7)
-        blk1 = struct.pack('<HBBH', 0, 0x73, 0, 7)
+        blk1 = struct.pack('<HBHH', 0, 0x73, 0, 7)
         # Block 2 (Terminator): CRC (2), Type (0x7B), Flags (0), Size (7)
-        blk2 = struct.pack('<HBBH', 0, 0x7B, 0, 7)
+        blk2 = struct.pack('<HBHH', 0, 0x7B, 0, 7)
 
         data = b'Rar!\x1a\x07\x00' + blk1 + blk2
         is_corr, is_comp, adv, rem = parser.analyze_binary(data)
@@ -273,6 +286,55 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertFalse(is_corr)
         self.assertTrue(is_comp)
         self.assertEqual(adv, 1300)
+
+    def test_flv_parser_invalid_tag_rejection(self):
+        parser = FLVParser()
+        hdr = b'FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00' # Header + PrevTagSize0
+        tag1_hdr = b'\x08\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00' # Audio Tag
+        tag1_data = b'audio'
+        tag1_prev = struct.pack('>I', 16)
+        invalid_tag = b'\x99'  # Invalid tag type (not 8, 9, or 18)
+        
+        data = hdr + tag1_hdr + tag1_data + tag1_prev + invalid_tag
+        is_corr, is_comp, adv, rem = parser.analyze_binary(data)
+        self.assertFalse(is_corr)
+        self.assertTrue(is_comp)
+        self.assertEqual(adv, len(data) - 1)  # completes at end of tag1
+
+    def test_mp4_parser_trailing_zeros(self):
+        mp4 = MP4Parser()
+        ftyp = struct.pack('>I', 16) + b'ftyp' + b'12345678'
+        zeros = b'\x00\x00\x00'  # short zero padding (less than 8 bytes)
+        
+        data = ftyp + zeros
+        is_corr, is_comp, adv, rem = mp4.analyze_binary(data)
+        self.assertFalse(is_corr)
+        self.assertTrue(is_comp)
+        self.assertEqual(adv, 16)  # completes exactly after ftyp box
+
+    def test_jpg_parser_strict_header(self):
+        from struct_carver.formats.binary.jpg_parser import JPGParser
+        parser = JPGParser()
+        
+        # Valid JPG starts with \xFF\xD8 followed by \xFF and valid marker (e.g. \xE0)
+        valid_data = b'\xFF\xD8\xFF\xE0\x00\x10JFIF\x00'
+        is_corr, is_comp, adv, rem = parser.analyze_binary(valid_data)
+        self.assertFalse(is_corr)
+        self.assertTrue(parser.header_verified)
+
+        # Invalid JPG starts with \xFF\xD8 but followed by non-\xFF byte
+        parser.reset()
+        invalid_data1 = b'\xFF\xD8\x00\xE0'
+        is_corr, is_comp, adv, rem = parser.analyze_binary(invalid_data1)
+        self.assertTrue(is_corr)
+        self.assertFalse(parser.header_verified)
+
+        # Invalid JPG starts with \xFF\xD8\xFF but followed by invalid marker code < 0xC0 (e.g. \x01)
+        parser.reset()
+        invalid_data2 = b'\xFF\xD8\xFF\x01'
+        is_corr, is_comp, adv, rem = parser.analyze_binary(invalid_data2)
+        self.assertTrue(is_corr)
+        self.assertFalse(parser.header_verified)
 
 
 if __name__ == '__main__':

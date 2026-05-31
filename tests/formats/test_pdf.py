@@ -30,3 +30,11 @@ class TestPDFParser(unittest.TestCase):
         data = b"%pdf-1.4\n1 0 obj << /Length 4 >> endobj stream\n1234\nbadstream\n%%eof"
         is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(data)
         self.assertTrue(is_corrupted)
+
+    def test_pdf_uppercase_header(self):
+        self.assertIn(b'%PDF-', self.parser.header_signatures)
+        self.assertIn(b'%pdf-', self.parser.header_signatures)
+        data = b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj stream data endstream [ ] %%eof"
+        is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(data)
+        self.assertFalse(is_corrupted)
+        self.assertTrue(is_complete)

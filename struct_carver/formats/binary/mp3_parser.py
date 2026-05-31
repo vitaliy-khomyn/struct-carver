@@ -13,6 +13,8 @@ class MP3Parser(BaseFormatParser):
         self.bytes_to_skip = 0
         self.frames_parsed = 0
         self.current_offset = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
 
     def clone(self) -> 'MP3Parser':
         new_parser = MP3Parser()
@@ -22,6 +24,8 @@ class MP3Parser(BaseFormatParser):
         new_parser.bytes_to_skip = self.bytes_to_skip
         new_parser.frames_parsed = self.frames_parsed
         new_parser.current_offset = self.current_offset
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_header = bytearray(self.pending_header)
         return new_parser
 
     def reset(self):
@@ -31,6 +35,8 @@ class MP3Parser(BaseFormatParser):
         self.bytes_to_skip = 0
         self.frames_parsed = 0
         self.current_offset = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
 
     def state_tuple(self) -> tuple:
         return (
@@ -39,7 +45,9 @@ class MP3Parser(BaseFormatParser):
             self.id3_size,
             self.bytes_to_skip,
             self.frames_parsed,
-            self.current_offset
+            self.current_offset,
+            self.header_verified,
+            bytes(self.pending_header)
         )
 
     @property
@@ -134,100 +142,85 @@ class MP3Parser(BaseFormatParser):
         idx = 0
 
         if not self.is_open:
-            # Find ID3 or frame sync
-            id3_idx = data.find(b'ID3')
-            sync_idx = -1
-            for offset in range(n - 1):
-                if data[offset] == 0xFF and (data[offset+1] & 0xE0) == 0xE0:
-                    sync_idx = offset
-                    break
+            if not self.pending_header:
+                if data.startswith(b'ID3'):
+                    self.id3_parsed = False
+                elif len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+                    self.id3_parsed = True
+                else:
+                    return True, False, 0, 0
+                idx = 0
+            self.is_open = True
 
-            valid_indices = [p for p in [id3_idx, sync_idx] if p != -1]
-            if not valid_indices:
+        if self.bytes_to_skip > 0:
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            self.current_offset += skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
+
+        if not self.id3_parsed:
+            if len(self.pending_header) < 10:
+                needed = 10 - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < 10:
+                    return False, False, n, 10 - len(self.pending_header)
+
+            size_bytes = self.pending_header[6:10]
+            if (size_bytes[0] & 0x80) or (size_bytes[1] & 0x80) or (size_bytes[2] & 0x80) or (size_bytes[3] & 0x80):
                 return True, False, 0, 0
 
-            start_idx = min(valid_indices)
-            self.is_open = True
-            idx = start_idx
-            self.current_offset = start_idx
-
-        # Skip bytes requested from previous chunk
-        if self.bytes_to_skip > 0:
-            if n - idx <= self.bytes_to_skip:
-                self.bytes_to_skip -= (n - idx)
-                self.current_offset += (n - idx)
-                return False, False, n, 0
-            else:
-                idx += self.bytes_to_skip
-                self.bytes_to_skip = 0
-
-        # Handle ID3 tag if not parsed yet
-        if data[idx : idx + 3] == b'ID3' and not self.id3_parsed:
-            if n - idx < 10:
-                self.current_offset = idx
-                return False, False, idx, 10 - (n - idx)
-
-            # Read ID3v2 tag size (synchsafe integer at offset 6)
-            size_bytes = data[idx + 6 : idx + 10]
             self.id3_size = (
                 (size_bytes[0] & 0x7F) << 21 |
                 (size_bytes[1] & 0x7F) << 14 |
                 (size_bytes[2] & 0x7F) << 7 |
                 (size_bytes[3] & 0x7F)
             )
-            # The total tag size is header (10 bytes) + size
-            total_tag_size = 10 + self.id3_size
+            self.bytes_to_skip = self.id3_size
             self.id3_parsed = True
+            self.pending_header = bytearray()
 
-            if n - idx < total_tag_size:
-                self.bytes_to_skip = total_tag_size - (n - idx)
-                self.current_offset = idx
-                return False, False, n, 0
+            if self.bytes_to_skip > 0:
+                skip_amount = min(n - idx, self.bytes_to_skip)
+                idx += skip_amount
+                self.bytes_to_skip -= skip_amount
+                if self.bytes_to_skip > 0:
+                    return False, False, n, self.bytes_to_skip
 
-            idx += total_tag_size
-
-        # Parse audio frames
         while idx < n:
-            # Check for ID3v1 tag at the end of file (128 bytes starting with 'TAG')
             if data[idx : idx + 3] == b'TAG':
                 if n - idx < 128:
-                    self.current_offset = idx
                     return False, False, idx, 128 - (n - idx)
                 idx += 128
-                return False, True, idx, 0
+                if self.frames_parsed >= 4 or self.header_verified:
+                    return False, True, idx, 0
+                else:
+                    return True, False, 0, 0
 
-            # Must be a frame header
             if n - idx < 4:
-                self.current_offset = idx
                 return False, False, idx, 4 - (n - idx)
 
             frame_size = self._parse_frame_size(data[idx : idx + 4])
             if frame_size <= 0:
-                # If we parsed frames already and then found invalid sync bytes,
-                # we have successfully carved a complete MP3 file!
-                if self.frames_parsed > 0:
+                if self.frames_parsed >= 4 or self.header_verified:
                     return False, True, idx, 0
                 else:
-                    # Let's see if we can find the next sync byte or if we should fail
-                    next_sync = -1
-                    for offset in range(idx + 1, n - 1):
-                        if data[offset] == 0xFF and (data[offset+1] & 0xE0) == 0xE0:
-                            next_sync = offset
-                            break
-                    if next_sync != -1:
-                        idx = next_sync
-                        continue
-                    else:
-                        return True, False, 0, 0
+                    return True, False, 0, 0
 
             if n - idx < frame_size:
                 self.bytes_to_skip = frame_size - (n - idx)
                 self.frames_parsed += 1
-                self.current_offset = idx
-                return False, False, n, 0
+                if self.frames_parsed >= 4:
+                    self.header_verified = True
+                return False, False, n, self.bytes_to_skip
 
             idx += frame_size
             self.frames_parsed += 1
+            if self.frames_parsed >= 4:
+                self.header_verified = True
 
         self.current_offset = idx
         return False, False, n, 0

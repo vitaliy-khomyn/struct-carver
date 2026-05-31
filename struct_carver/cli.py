@@ -9,7 +9,14 @@ from struct_carver.dashboard import generate_dashboard
 from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
 from struct_carver.logger import setup_logger
 
-SUPPORTED_FORMATS = ['xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite', 'sqlitewal']
+SUPPORTED_FORMATS = [
+    'xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite', 'sqlitewal',
+    'jpg', 'png', 'gif', 'bmp', 'tiff', 'pcx',
+    'wav', 'mp3', 'au', 'wma', 'wmv',
+    'avi', 'mp4', 'mov', 'flv', 'mpg',
+    '7z', 'rar', 'gz', 'bz2', 'tar', 'wim',
+    'docx', 'xlsx', 'pptx', 'tif'
+]
 
 
 def carve_worker(args):
@@ -38,12 +45,15 @@ def carve_worker(args):
         carver.carve(image, output, start, end, worker_id)
 
 
-def merge_worker_reports(output_dir):
+def merge_worker_reports(output_dir, error_message=None):
     report_files = glob.glob(os.path.join(output_dir, "carve_report_w*.json"))
-    if not report_files:
+    if not report_files and not error_message:
         return
 
     merged_report = {"files": []}
+    if error_message:
+        merged_report["error"] = error_message
+
     for rf in report_files:
         try:
             with open(rf, 'r') as f:
@@ -183,7 +193,15 @@ def main():
         logger.warning("Carving aborted by user.")
         sys.exit(130)
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+        try:
+            merge_worker_reports(args.output, error_message=str(e))
+            if args.dashboard:
+                json_report = os.path.join(args.output, "carve_report.json")
+                html_out = os.path.join(args.output, "dashboard.html")
+                generate_dashboard(json_report, html_out)
+        except Exception as merge_err:
+            logger.error(f"Failed to generate error report: {merge_err}")
         sys.exit(1)
 
 

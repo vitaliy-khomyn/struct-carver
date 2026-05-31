@@ -10,19 +10,38 @@ class WMAParser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
         self.total_size = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.header_size = 0
+        self.bytes_to_skip = 0
 
     def clone(self) -> 'WMAParser':
         new_parser = WMAParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_header = bytearray(self.pending_header)
+        new_parser.header_size = self.header_size
+        new_parser.bytes_to_skip = self.bytes_to_skip
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.total_size = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.header_size = 0
+        self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.total_size)
+        return (
+            self.is_open,
+            self.total_size,
+            self.header_verified,
+            bytes(self.pending_header),
+            self.header_size,
+            self.bytes_to_skip
+        )
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -38,56 +57,58 @@ class WMAParser(BaseFormatParser):
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         n = len(data)
+        idx = 0
 
         if not self.is_open:
-            start_idx = data.find(b'\x30\x26\xB2\x75\x8E\x66\xCF\x11\xA6\xD9\x00\xAA\x00\x62\xCE\x6C')
-            if start_idx != -1:
-                # Need at least 24 bytes to read Header Object size
-                if n - start_idx < 24:
-                    return False, False, n, 24 - (n - start_idx)
+            if not self.pending_header:
+                start_idx = data.find(b'\x30\x26\xB2\x75\x8E\x66\xCF\x11\xA6\xD9\x00\xAA\x00\x62\xCE\x6C')
+                if start_idx == -1:
+                    return True, False, 0, 0
+                idx = start_idx
 
-                header_size = struct.unpack('<Q', data[start_idx + 16 : start_idx + 24])[0]
-                if header_size < 30 or header_size > 50 * 1024 * 1024: # 50MB header sanity limit
+            if len(self.pending_header) < 24:
+                needed = 24 - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < 24:
+                    return False, False, n, 24 - len(self.pending_header)
+
+            if self.header_size == 0:
+                self.header_size = struct.unpack('<Q', self.pending_header[16:24])[0]
+                if self.header_size < 30 or self.header_size > 50 * 1024 * 1024:
                     return True, False, 0, 0
 
-                # Need the whole header to parse sub-objects
-                if n - start_idx < header_size:
-                    return False, False, n, header_size - (n - start_idx)
+            if len(self.pending_header) < self.header_size:
+                needed = self.header_size - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < self.header_size:
+                    return False, False, n, self.header_size - len(self.pending_header)
 
-                # Look for the File Properties Object GUID inside the header
-                # GUID: A1 5F C1 8C 85 4F D0 11 AC B0 00 A0 C9 03 49 BE (in file representation)
-                # First 3 parts are little-endian: A15FC18C -> 8CC15FA1, 4F85 -> 854F, D011 -> 11D0
-                fp_guid = b'\xA1\x5F\xC1\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
-                fp_idx = data.find(fp_guid, start_idx + 24, start_idx + header_size)
-
-                if fp_idx == -1:
-                    # File Properties Object must be present in header
-                    return True, False, 0, 0
-
-                # File Properties Object size is 104 bytes. Check if it fits
-                if fp_idx + 104 > start_idx + header_size:
-                    return True, False, 0, 0
-
-                # File Size is at offset 40 from the start of the File Properties Object (8 bytes uint64)
-                file_size = struct.unpack('<Q', data[fp_idx + 40 : fp_idx + 48])[0]
-                self.total_size = file_size
-                self.is_open = True
-
-                # Safety check
-                if self.total_size < header_size or self.total_size > 10 * 1024 * 1024 * 1024: # 10GB limit
-                    return True, False, 0, 0
-
-                bytes_remaining = self.total_size - (n - start_idx)
-                if bytes_remaining <= 0:
-                    return False, True, start_idx + self.total_size, 0
-                return False, False, n, bytes_remaining
-            else:
+            # Accumulate done, verify
+            fp_guid = b'\xA1\x5F\xC1\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
+            fp_idx = self.pending_header.find(fp_guid, 24)
+            if fp_idx == -1 or fp_idx + 104 > self.header_size:
                 return True, False, 0, 0
 
-        if bytes_remaining > 0:
-            if n >= bytes_remaining:
-                return False, True, bytes_remaining, 0
-            else:
-                return False, False, n, bytes_remaining - n
+            file_size = struct.unpack('<Q', self.pending_header[fp_idx + 40 : fp_idx + 48])[0]
+            self.total_size = file_size
+            self.is_open = True
+            self.header_verified = True
 
-        return False, False, n, 0
+            if self.total_size < self.header_size or self.total_size > 10 * 1024 * 1024 * 1024:
+                return True, False, 0, 0
+
+            self.bytes_to_skip = self.total_size - len(self.pending_header)
+            self.pending_header = bytearray()
+
+        if self.bytes_to_skip > 0:
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
+
+        return False, True, idx, 0

@@ -6,19 +6,28 @@ class MPGParser(BaseFormatParser):
     engine_type = "binary"
     ext = "mpg"
 
+    # Maximum MPEG file size before we stop and emit what we have
+    MAX_SIZE = 500 * 1024 * 1024  # 500 MB
+
     def __init__(self):
         self.is_open = False
+        self.header_verified = False
+        self.bytes_consumed = 0
 
     def clone(self) -> 'MPGParser':
         new_parser = MPGParser()
         new_parser.is_open = self.is_open
+        new_parser.header_verified = self.header_verified
+        new_parser.bytes_consumed = self.bytes_consumed
         return new_parser
 
     def reset(self):
         self.is_open = False
+        self.header_verified = False
+        self.bytes_consumed = 0
 
     def state_tuple(self) -> tuple:
-        return (self.is_open,)
+        return (self.is_open, self.header_verified, self.bytes_consumed)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -46,8 +55,15 @@ class MPGParser(BaseFormatParser):
                 return True, False, 0, 0
 
             start_idx = min(valid_indices)
+
             self.is_open = True
+            self.header_verified = True
             idx = start_idx
+
+        # Hard size cap: emit as complete if we've processed too many bytes
+        self.bytes_consumed += n - idx
+        if self.bytes_consumed > self.MAX_SIZE:
+            return False, True, n, 0
 
         # Search for MPEG End Code (b'\x00\x00\x01\xB9')
         end_idx = data.find(b'\x00\x00\x01\xB9', idx)
@@ -56,3 +72,4 @@ class MPGParser(BaseFormatParser):
 
         # Wait for more data
         return False, False, n, 0
+

@@ -75,4 +75,4 @@ class TestSQLiteWALParser(unittest.TestCase):
         is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(chunk1)
         self.assertFalse(is_corrupted)
         self.assertFalse(is_complete)
-        self.assertEqual(remaining, 1038)  # 24 - 10 + 1024
+        self.assertEqual(remaining, 14)  # 24 - 10

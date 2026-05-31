@@ -9,19 +9,34 @@ class BMPParser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
         self.total_size = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.bytes_to_skip = 0
 
     def clone(self) -> 'BMPParser':
         new_parser = BMPParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
+        new_parser.header_verified = self.header_verified
+        new_parser.pending_header = bytearray(self.pending_header)
+        new_parser.bytes_to_skip = self.bytes_to_skip
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.total_size = 0
+        self.header_verified = False
+        self.pending_header = bytearray()
+        self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.total_size)
+        return (
+            self.is_open,
+            self.total_size,
+            self.header_verified,
+            bytes(self.pending_header),
+            self.bytes_to_skip
+        )
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -36,32 +51,51 @@ class BMPParser(BaseFormatParser):
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         n = len(data)
+        idx = 0
 
         if not self.is_open:
-            start_idx = data.find(b'BM')
-            if start_idx != -1:
-                # Need at least 6 bytes to parse BM + 4-byte size field
-                if n - start_idx < 6:
-                    return False, False, n, 6 - (n - start_idx)
-
-                self.is_open = True
-                self.total_size = struct.unpack('<I', data[start_idx + 2 : start_idx + 6])[0]
-
-                # Safety boundary check for bitmap files (minimum 54 bytes header)
-                if self.total_size < 54 or self.total_size > 100 * 1024 * 1024:
+            if not self.pending_header:
+                start_idx = data.find(b'BM')
+                if start_idx == -1:
                     return True, False, 0, 0
+                idx = start_idx
 
-                bytes_remaining = self.total_size - (n - start_idx)
-                if bytes_remaining <= 0:
-                    return False, True, start_idx + self.total_size, 0
-                return False, False, n, bytes_remaining
-            else:
+            # Accumulate the full 14-byte BITMAPFILEHEADER before validating.
+            # Layout: 'BM'(2) | file_size(4) | reserved1(2) | reserved2(2) | pixel_offset(4)
+            if len(self.pending_header) < 14:
+                needed = 14 - len(self.pending_header)
+                take = min(n - idx, needed)
+                self.pending_header.extend(data[idx : idx + take])
+                idx += take
+                if len(self.pending_header) < 14:
+                    return False, False, n, 14 - len(self.pending_header)
+
+            self.total_size = struct.unpack('<I', bytes(self.pending_header[2:6]))[0]
+            reserved1 = struct.unpack('<H', bytes(self.pending_header[6:8]))[0]
+            reserved2 = struct.unpack('<H', bytes(self.pending_header[8:10]))[0]
+            pixel_offset = struct.unpack('<I', bytes(self.pending_header[10:14]))[0]
+
+            # Strict header validation to reject false positives:
+            # 1. Reserved fields must be zero in any spec-compliant BMP.
+            # 2. total_size must be in a reasonable range.
+            # 3. pixel_offset must be >= 54 (minimum header) and < total_size.
+            if reserved1 != 0 or reserved2 != 0:
+                return True, False, 0, 0
+            if self.total_size < 54 or self.total_size > 100 * 1024 * 1024:
+                return True, False, 0, 0
+            if pixel_offset < 54 or pixel_offset >= self.total_size:
                 return True, False, 0, 0
 
-        if bytes_remaining > 0:
-            if n >= bytes_remaining:
-                return False, True, bytes_remaining, 0
-            else:
-                return False, False, n, bytes_remaining - n
+            self.is_open = True
+            self.header_verified = True
+            self.pending_header = bytearray()
+            self.bytes_to_skip = self.total_size - 14
 
-        return False, False, n, 0
+        if self.bytes_to_skip > 0:
+            skip_amount = min(n - idx, self.bytes_to_skip)
+            idx += skip_amount
+            self.bytes_to_skip -= skip_amount
+            if self.bytes_to_skip > 0:
+                return False, False, n, self.bytes_to_skip
+
+        return False, True, idx, 0

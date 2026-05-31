@@ -10,21 +10,24 @@ class JPGParser(BaseFormatParser):
         self.is_open = False
         self.in_scan_data = False
         self.bytes_to_skip = 0
+        self.header_verified = False
 
     def clone(self) -> 'JPGParser':
         new_parser = JPGParser()
         new_parser.is_open = self.is_open
         new_parser.in_scan_data = self.in_scan_data
         new_parser.bytes_to_skip = self.bytes_to_skip
+        new_parser.header_verified = self.header_verified
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.in_scan_data = False
         self.bytes_to_skip = 0
+        self.header_verified = False
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, self.in_scan_data, self.bytes_to_skip)
+        return (self.is_open, self.in_scan_data, self.bytes_to_skip, self.header_verified)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -41,20 +44,37 @@ class JPGParser(BaseFormatParser):
         n = len(data)
         idx = 0
 
-        if bytes_remaining > 0:
-            if n <= bytes_remaining:
-                return False, False, n, bytes_remaining - n
-            else:
-                idx = bytes_remaining
-                bytes_remaining = 0
-
         if not self.is_open:
             start_idx = data.find(b'\xFF\xD8')
             if start_idx != -1:
                 self.is_open = True
+                self.header_verified = False
                 idx = start_idx + 2
             else:
                 return True, False, 0, 0
+
+        if not self.header_verified:
+            if idx < n:
+                if data[idx] != 0xFF:
+                    return True, False, 0, 0
+                if idx + 1 < n:
+                    marker = data[idx + 1]
+                    if marker < 0xC0 or marker == 0xFF:
+                        return True, False, 0, 0
+                    # Read the 2-byte marker length to validate it further.
+                    # Valid segment lengths are 2..65535.  We need bytes at idx+2 and idx+3.
+                    if idx + 3 < n:
+                        seg_len = struct.unpack('>H', data[idx + 2 : idx + 4])[0]
+                        if seg_len < 2:
+                            return True, False, 0, 0
+                        self.header_verified = True
+                    else:
+                        # Not enough bytes yet; wait for the next chunk.
+                        return False, False, n, (idx + 4) - n
+                else:
+                    return False, False, n, 2
+            else:
+                return False, False, n, 2
 
         # Skip bytes requested from previous block skip
         if self.bytes_to_skip > 0:

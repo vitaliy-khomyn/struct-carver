@@ -10,19 +10,22 @@ class BZ2Parser(BaseFormatParser):
     def __init__(self):
         self.is_open = False
         self.accumulated_data = b""
+        self.header_verified = False
 
     def clone(self) -> 'BZ2Parser':
         new_parser = BZ2Parser()
         new_parser.is_open = self.is_open
         new_parser.accumulated_data = self.accumulated_data
+        new_parser.header_verified = self.header_verified
         return new_parser
 
     def reset(self):
         self.is_open = False
         self.accumulated_data = b""
+        self.header_verified = False
 
     def state_tuple(self) -> tuple:
-        return (self.is_open, len(self.accumulated_data))
+        return (self.is_open, len(self.accumulated_data), self.header_verified)
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -55,18 +58,20 @@ class BZ2Parser(BaseFormatParser):
             else:
                 return True, False, 0, 0
 
+        prev_accum_len = len(self.accumulated_data)
         # Accumulate data
         self.accumulated_data += data[idx:]
 
         try:
             decompressor = bz2.BZ2Decompressor()
             decompressor.decompress(self.accumulated_data)
+            self.header_verified = True
             
             if decompressor.eof:
                 unused_len = len(decompressor.unused_data)
                 total_size = len(self.accumulated_data) - unused_len
                 self.accumulated_data = self.accumulated_data[:total_size]
-                return False, True, idx + total_size, 0
+                return False, True, idx + (total_size - prev_accum_len), 0
             else:
                 return False, False, n, 0
         except OSError:
