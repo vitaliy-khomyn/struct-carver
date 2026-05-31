@@ -1,13 +1,19 @@
+"""RAR format parser for Struct Carver!
+
+This module implements the parser for RAR binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class RARParser(BaseFormatParser):
+    """Parser for RAR format files."""
     engine_type = "binary"
     ext = "rar"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.rar_version = 0
         self.bytes_to_skip = 0
@@ -18,6 +24,11 @@ class RARParser(BaseFormatParser):
         self.pending_block = bytearray()
 
     def clone(self) -> 'RARParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = RARParser()
         new_parser.is_open = self.is_open
         new_parser.rar_version = self.rar_version
@@ -30,6 +41,7 @@ class RARParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.rar_version = 0
         self.bytes_to_skip = 0
@@ -40,6 +52,11 @@ class RARParser(BaseFormatParser):
         self.pending_block = bytearray()
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.rar_version,
@@ -53,15 +70,33 @@ class RARParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         # RAR4: Rar!\x1A\x07\x00
         # RAR5: Rar!\x1A\x07\x01\x00
         return [b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01\x00']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def _read_vint(self, data: bytes, offset: int) -> Tuple[int, int]:
@@ -84,6 +119,15 @@ class RARParser(BaseFormatParser):
         return -1, 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -124,7 +168,7 @@ class RARParser(BaseFormatParser):
             self.header_verified = True
             self.pending_header = bytearray()
 
-        # Skip bytes requested from previous chunk
+        # skip bytes requested from previous chunk
         if self.bytes_to_skip > 0:
             skip_amount = min(n - idx, self.bytes_to_skip)
             idx += skip_amount
@@ -136,7 +180,7 @@ class RARParser(BaseFormatParser):
         while idx < n:
             if self.rar_version == 4:
                 # RAR4 Block Parser
-                # We need to accumulate at least 7 bytes for the basic header
+                # we need to accumulate at least 7 bytes for the basic header
                 if len(self.pending_block) < 7:
                     needed = 7 - len(self.pending_block)
                     take = min(n - idx, needed)
@@ -145,7 +189,7 @@ class RARParser(BaseFormatParser):
                     if len(self.pending_block) < 7:
                         return False, False, n, 7 - len(self.pending_block)
 
-                # Unpack basic header fields
+                # unpack basic header fields
                 h_crc, h_type, h_flags, h_size = struct.unpack('<HBHH', bytes(self.pending_block[:7]))
 
                 header_len = 7
@@ -173,7 +217,7 @@ class RARParser(BaseFormatParser):
                     else:
                         return True, False, 0, 0
 
-                # Terminate on terminator block
+                # terminate on terminator block
                 if h_type == 0x7B:
                     term_size = h_size
                     if len(self.pending_block) < term_size:
@@ -188,7 +232,7 @@ class RARParser(BaseFormatParser):
                     self.pending_block = bytearray()
                     return False, True, write_end, 0
 
-                # Skip the block content
+                # skip the block content
                 self.bytes_to_skip = total_block_size - len(self.pending_block)
                 self.pending_block = bytearray()
                 self.blocks_parsed += 1
@@ -202,7 +246,7 @@ class RARParser(BaseFormatParser):
 
             else:
                 # RAR5 Block Parser
-                # We need at least 4 bytes for CRC
+                # we need at least 4 bytes for CRC
                 if len(self.pending_block) < 4:
                     needed = 4 - len(self.pending_block)
                     take = min(n - idx, needed)
@@ -211,7 +255,7 @@ class RARParser(BaseFormatParser):
                     if len(self.pending_block) < 4:
                         return False, False, n, 4 - len(self.pending_block)
 
-                # Now read the header size VINT (starting at offset 4 of block header)
+                # now read the header size VINT (starting at offset 4 of block header)
                 h_size, h_size_len = self._read_vint(bytes(self.pending_block), 4)
                 while h_size_len == 0 or h_size < 0:
                     if idx >= n:
@@ -261,7 +305,7 @@ class RARParser(BaseFormatParser):
 
                 total_block_size = total_header_size + data_size
 
-                # Terminate on End of Archive block (type 5)
+                # terminate on End of Archive block (type 5)
                 if h_type == 5:
                     if len(self.pending_block) < total_block_size:
                         needed = total_block_size - len(self.pending_block)
@@ -275,7 +319,7 @@ class RARParser(BaseFormatParser):
                     self.pending_block = bytearray()
                     return False, True, write_end, 0
 
-                # Skip block content
+                # skip block content
                 self.bytes_to_skip = total_block_size - len(self.pending_block)
                 self.pending_block = bytearray()
                 self.blocks_parsed += 1

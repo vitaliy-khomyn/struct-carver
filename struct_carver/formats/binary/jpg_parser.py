@@ -1,18 +1,29 @@
+"""JPG format parser for Struct Carver!
+
+This module implements the parser for JPG binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class JPGParser(BaseFormatParser):
+    """Parser for JPG format files."""
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.in_scan_data = False
         self.bytes_to_skip = 0
         self.header_verified = False
 
     def clone(self) -> 'JPGParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = JPGParser()
         new_parser.is_open = self.is_open
         new_parser.in_scan_data = self.in_scan_data
@@ -21,26 +32,59 @@ class JPGParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.in_scan_data = False
         self.bytes_to_skip = 0
         self.header_verified = False
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (self.is_open, self.in_scan_data, self.bytes_to_skip, self.header_verified)
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         return [b'\xFF\xD8']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return [b'\xFF\xD9']
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -61,22 +105,22 @@ class JPGParser(BaseFormatParser):
                     marker = data[idx + 1]
                     if marker < 0xC0 or marker == 0xFF:
                         return True, False, 0, 0
-                    # Read the 2-byte marker length to validate it further.
-                    # Valid segment lengths are 2..65535.  We need bytes at idx+2 and idx+3.
+                    # read the 2-byte marker length to validate it further.
+                    # valid segment lengths are 2..65535.  We need bytes at idx+2 and idx+3.
                     if idx + 3 < n:
                         seg_len = struct.unpack('>H', data[idx + 2 : idx + 4])[0]
                         if seg_len < 2:
                             return True, False, 0, 0
                         self.header_verified = True
                     else:
-                        # Not enough bytes yet; wait for the next chunk.
+                        # not enough bytes yet; wait for the next chunk.
                         return False, False, n, (idx + 4) - n
                 else:
                     return False, False, n, 2
             else:
                 return False, False, n, 2
 
-        # Skip bytes requested from previous block skip
+        # skip bytes requested from previous block skip
         if self.bytes_to_skip > 0:
             if n - idx <= self.bytes_to_skip:
                 self.bytes_to_skip -= (n - idx)
@@ -87,31 +131,31 @@ class JPGParser(BaseFormatParser):
 
         while idx < n:
             if self.in_scan_data:
-                # Inside entropy coded scan data. Scan for \xFF
+                # inside entropy coded scan data. Scan for \xFF
                 next_ff = data.find(b'\xFF', idx)
                 if next_ff == -1:
                     break
 
                 if next_ff + 1 >= n:
-                    # Split marker at chunk boundary. Wait for next chunk
+                    # split marker at chunk boundary. Wait for next chunk
                     return False, False, next_ff, 0
 
                 marker = data[next_ff + 1]
                 if marker == 0x00:
-                    # Escaped \xFF (byte stuffed). Skip both bytes
+                    # escaped \xFF (byte stuffed). Skip both bytes
                     idx = next_ff + 2
                 elif 0xD0 <= marker <= 0xD7:
-                    # Restart marker. Skip both bytes
+                    # restart marker. Skip both bytes
                     idx = next_ff + 2
                 elif marker == 0xD9:
-                    # End of Image!
+                    # end of Image!
                     return False, True, next_ff + 2, 0
                 else:
-                    # Any other marker terminates scan data (e.g. DNL, next scan, etc.)
+                    # any other marker terminates scan data (e.g. DNL, next scan, etc.)
                     self.in_scan_data = False
                     idx = next_ff
             else:
-                # Outside scan data. We are looking for markers.
+                # outside scan data. We are looking for markers.
                 next_ff = data.find(b'\xFF', idx)
                 if next_ff == -1:
                     break
@@ -121,19 +165,19 @@ class JPGParser(BaseFormatParser):
 
                 marker = data[next_ff + 1]
                 if marker == 0x00:
-                    # Stray stuffed byte outside scan data? Treat as garbage
+                    # stray stuffed byte outside scan data? Treat as garbage
                     idx = next_ff + 2
                 elif marker == 0xD9:
-                    # End of Image
+                    # end of Image
                     return False, True, next_ff + 2, 0
                 elif marker == 0xD8:
-                    # Nested SOI or restart? Skip
+                    # nested SOI or restart? Skip
                     idx = next_ff + 2
                 elif 0xD0 <= marker <= 0xD7:
-                    # Restart marker
+                    # restart marker
                     idx = next_ff + 2
                 else:
-                    # Marker with size. Need at least 4 bytes to parse size
+                    # marker with size. Need at least 4 bytes to parse size
                     if n - next_ff < 4:
                         return False, False, next_ff, 0
                     
@@ -141,11 +185,11 @@ class JPGParser(BaseFormatParser):
                     total_marker_len = 2 + marker_len  # 2 bytes for \xFF + marker code, plus length field
                     
                     if marker == 0xDA:
-                        # Start of Scan (SOS). Enter scan data mode after the SOS header
+                        # start of Scan (SOS). Enter scan data mode after the SOS header
                         self.in_scan_data = True
                         idx = next_ff + total_marker_len
                     else:
-                        # Standard marker block. Skip it
+                        # standard marker block. Skip it
                         if n - next_ff < total_marker_len:
                             self.bytes_to_skip = total_marker_len - (n - next_ff)
                             return False, False, n, 0

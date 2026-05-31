@@ -1,15 +1,31 @@
+"""PDF format parser for Struct Carver!
+
+This module provides the PDFParser class, which validates PDF stream syntax,
+length tags, and object delimiters, supporting gap-jumping over non-PDF clusters.
+"""
+
 import re
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class PDFParser(BaseFormatParser):
+    """Parser for PDF documents that tracks stream lengths and PDF markers.
+
+    Attributes:
+        is_open (bool): True if the parser has successfully matched a PDF header.
+        pending_endstream (bool): True if looking for 'endstream' token in next chunk.
+        pending_bytes_needed (int): Number of bytes needed to finish matching 'endstream'.
+        header_verified (bool): True if the header was verified.
+    """
+
     engine_type = "binary"
-    # PDFs can be heavily fragmented across large images; allow searching the
+    # pdfs can be heavily fragmented across large images; allow searching the
     # full image (10000 clusters = 40 MB) before giving up on a fragment.
     max_gap_clusters = 10000
 
     def __init__(self):
+        """Initializes the PDF parser state and length regex."""
         self.is_open = False
         self.length_pattern = re.compile(rb'/Length\s+(\d+)')
         self.pending_endstream = False
@@ -17,6 +33,11 @@ class PDFParser(BaseFormatParser):
         self.header_verified = False
 
     def clone(self) -> 'PDFParser':
+        """Creates a clone of the parser with the current state.
+
+        Returns:
+            PDFParser: The cloned parser instance.
+        """
         new_parser = PDFParser()
         new_parser.is_open = self.is_open
         new_parser.pending_endstream = self.pending_endstream
@@ -25,33 +46,62 @@ class PDFParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial default values."""
         self.is_open = False
         self.pending_endstream = False
         self.pending_bytes_needed = 0
         self.header_verified = False
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+        Returns:
+            tuple: representation of parser state.
+        """
         return (self.is_open, self.pending_endstream, self.pending_bytes_needed, self.header_verified)
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the list of header signature bytes.
+
+        Returns:
+            List[bytes]: Header signature list.
+        """
         return [b'%PDF-', b'%pdf-']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the list of footer signature bytes.
+
+        Returns:
+            List[bytes]: Footer signature list.
+        """
         return [b'%%eof']
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub implementation for tag extraction (unused for binary formats).
+
+        Args:
+            data (bytes): Data block.
+
+        Returns:
+            Tuple[List[Tuple[str, bool]], int]: Empty tag list and zero offset.
+        """
         return [], 0
 
     def gap_jump_verify(self, data: bytes) -> bool:
-        """Returns False if the cluster definitely belongs to another format.
-        Used by the gap-jump to reject clusters that start with a known
-        non-PDF binary signature.  Compressed PDF stream data has no
-        recognizable markers but should still be accepted as continuation."""
+        """Verifies if the candidate cluster looks like valid continuation data.
+
+        Args:
+            data (bytes): Candidate cluster data block.
+
+        Returns:
+            bool: True if the cluster should be accepted as continuation,
+                False if it starts with a known conflicting binary signature.
+        """
         if len(data) < 4:
-            return True  # too short to judge
-        # Reject clusters that start with a definite non-PDF file signature
+            return True
+        # reject clusters that start with a definite non-PDF file signature
         non_pdf_signatures = [
             b'\xFF\xD8\xFF',           # JPEG
             b'\x89PNG',                # PNG
@@ -72,12 +122,18 @@ class PDFParser(BaseFormatParser):
         for sig in non_pdf_signatures:
             if data.startswith(sig):
                 return False
-        return True  # unknown binary or PDF content — accept as continuation
+        return True
 
     def _validate_endstream(self, data_to_parse: bytes) -> Tuple[bool, bytes]:
-        """
-        Validates that data_to_parse starts with 'endstream'.
-        Returns (is_corrupted, remaining_data).
+        """Validates that the given data block starts with the endstream keyword.
+
+        Args:
+            data_to_parse (bytes): Segment following a stream payload.
+
+        Returns:
+            Tuple[bool, bytes]: A tuple of:
+                - is_corrupted (bool): True if validation failed.
+                - remaining_data (bytes): Sliced bytes after 'endstream'.
         """
         stripped = data_to_parse.lstrip(b'\r\n')
         if not stripped:
@@ -97,6 +153,19 @@ class PDFParser(BaseFormatParser):
             return False, b""
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary cluster to locate PDF elements and stream offsets.
+
+        Args:
+            data (bytes): Input data block cluster.
+            bytes_remaining (int): Expected remaining stream bytes (if in mid-stream).
+
+        Returns:
+            Tuple[bool, bool, int, int]: A tuple of:
+                - is_corrupted (bool): True if structure is malformed.
+                - is_complete (bool): True if %%eof footer is reached.
+                - bytes_to_advance (int): Position cursor movement offset.
+                - bytes_remaining (int): Next remaining bytes expectation.
+        """
         if self.pending_endstream:
             self.pending_endstream = False
             needed = getattr(self, 'pending_bytes_needed', 9)
@@ -127,7 +196,7 @@ class PDFParser(BaseFormatParser):
             if len(data) < bytes_remaining:
                 return False, False, len(data), bytes_remaining - len(data)
             else:
-                # Stream finished in this chunk, validate that 'endstream' follows
+                # stream finished in this chunk, validate that 'endstream' follows
                 data_to_parse = data[bytes_remaining:]
                 bytes_remaining = 0
                 is_corr, remaining_data = self._validate_endstream(data_to_parse)
@@ -140,7 +209,7 @@ class PDFParser(BaseFormatParser):
                 data_to_parse = data[end_stream_idx + 9:]
                 bytes_remaining = 0
             else:
-                # Check for split endstream at the end of the chunk
+                # check for split endstream at the end of the chunk
                 found_split = False
                 for length in range(8, 0, -1):
                     suffix = data[-length:]
@@ -177,7 +246,7 @@ class PDFParser(BaseFormatParser):
                         return True, False, 0, 0
                     idx_stream = len(data_to_parse) - len(remaining_data)
             else:
-                # Unknown length stream (indirect reference)
+                # unknown length stream (indirect reference)
                 end_stream_idx = data_to_parse.find(b'endstream', stream_start)
                 if end_stream_idx != -1:
                     idx_stream = end_stream_idx + 9

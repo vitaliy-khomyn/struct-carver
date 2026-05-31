@@ -1,13 +1,19 @@
+"""MOV format parser for Struct Carver!
+
+This module implements the parser for MOV binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class MOVParser(BaseFormatParser):
+    """Parser for MOV format files."""
     engine_type = "binary"
     ext = "mov"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.total_size = 0
         self.bytes_to_skip = 0
@@ -17,6 +23,11 @@ class MOVParser(BaseFormatParser):
         self.pending_box = bytearray()
 
     def clone(self) -> 'MOVParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = MOVParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
@@ -28,6 +39,7 @@ class MOVParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.total_size = 0
         self.bytes_to_skip = 0
@@ -37,6 +49,11 @@ class MOVParser(BaseFormatParser):
         self.pending_box = bytearray()
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.total_size,
@@ -49,9 +66,14 @@ class MOVParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
-        # Use 8-byte [size:4][type:4] box patterns identical to MP4Parser.
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
+        # use 8-byte [size:4][type:4] box patterns identical to MP4Parser.
         # QuickTime/MOV commonly starts with a free/wide/ftyp box.
-        # Sizes listed cover the most common ftyp box lengths.
+        # sizes listed cover the most common ftyp box lengths.
         return [
             b'\x00\x00\x00\x18ftyp',  # 24-byte ftyp
             b'\x00\x00\x00\x1Cftyp',  # 28-byte ftyp
@@ -65,9 +87,22 @@ class MOVParser(BaseFormatParser):
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def _is_valid_box_type(self, box_type: bytes) -> bool:
@@ -83,11 +118,20 @@ class MOVParser(BaseFormatParser):
         return True
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
         if not self.is_open:
-            # Signatures are full 8-byte [size:4][type:4] patterns, so data[0:8]
+            # signatures are full 8-byte [size:4][type:4] patterns, so data[0:8]
             # is already at the box boundary.  Find the earliest box type.
             ftyp_idx = data.find(b'ftyp', 4)
             moov_idx = data.find(b'moov', 4)
@@ -104,7 +148,7 @@ class MOVParser(BaseFormatParser):
             idx = start_idx
             self.current_offset = start_idx
 
-        # Skip bytes requested from previous chunk
+        # skip bytes requested from previous chunk
         if self.bytes_to_skip > 0:
             skip_amount = min(n - idx, self.bytes_to_skip)
             idx += skip_amount
@@ -113,7 +157,7 @@ class MOVParser(BaseFormatParser):
             if self.bytes_to_skip > 0:
                 return False, False, n, self.bytes_to_skip
 
-        # Check for trailing zero padding / terminator
+        # check for trailing zero padding / terminator
         if self.valid_boxes_count > 0:
             remaining_bytes = bytes(self.pending_box) + data[idx:]
             if remaining_bytes and all(b == 0 for b in remaining_bytes):

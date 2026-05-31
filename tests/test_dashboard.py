@@ -1,3 +1,4 @@
+"""Unit tests for the DASHBOARD component."""
 import os
 import json
 import tempfile
@@ -6,7 +7,9 @@ from struct_carver.dashboard import generate_dashboard
 
 
 class TestDashboard(unittest.TestCase):
+    """Test suite for Dashboard parsing and carving."""
     def test_generate_dashboard(self):
+        """Tests that generate dashboard."""
         with tempfile.TemporaryDirectory() as temp_dir:
             json_path = os.path.join(temp_dir, "carve_report.json")
             html_path = os.path.join(temp_dir, "dashboard.html")

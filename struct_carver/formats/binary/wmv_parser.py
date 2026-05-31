@@ -1,13 +1,19 @@
+"""WMV format parser for Struct Carver!
+
+This module implements the parser for WMV binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class WMVParser(BaseFormatParser):
+    """Parser for WMV format files."""
     engine_type = "binary"
     ext = "wmv"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.total_size = 0
         self.header_verified = False
@@ -16,6 +22,11 @@ class WMVParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def clone(self) -> 'WMVParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = WMVParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
@@ -26,6 +37,7 @@ class WMVParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.total_size = 0
         self.header_verified = False
@@ -34,6 +46,11 @@ class WMVParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.total_size,
@@ -45,17 +62,44 @@ class WMVParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         # ASF Header Object GUID
         return [b'\x30\x26\xB2\x75\x8E\x66\xCF\x11\xA6\xD9\x00\xAA\x00\x62\xCE\x6C']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -87,14 +131,14 @@ class WMVParser(BaseFormatParser):
                 if len(self.pending_header) < self.header_size:
                     return False, False, n, self.header_size - len(self.pending_header)
 
-            # Accumulate done, verify
+            # accumulate done, verify
             fp_guid = b'\xA1\x5F\xC1\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
             fp_idx = self.pending_header.find(fp_guid, 24)
             if fp_idx == -1 or fp_idx + 104 > self.header_size:
                 return True, False, 0, 0
 
             # WMV must contain a Video Stream Header GUID.
-            # If only an Audio Stream Header GUID is present, this is WMA, not WMV.
+            # if only an Audio Stream Header GUID is present, this is WMA, not WMV.
             # ASF_Video_Media GUID (little-endian): BC19EFC0-5B4D-11CF-A8FD-00805F5C442B
             video_stream_guid = b'\xC0\xEF\x19\xBC\x4D\x5B\xCF\x11\xA8\xFD\x00\x80\x5F\x5C\x44\x2B'
             if video_stream_guid not in self.pending_header:

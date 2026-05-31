@@ -1,12 +1,18 @@
+"""FLV format parser for Struct Carver!
+
+This module implements the parser for FLV binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class FLVParser(BaseFormatParser):
+    """Parser for FLV format files."""
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.header_length = 0
         self.bytes_to_skip = 0
@@ -17,6 +23,11 @@ class FLVParser(BaseFormatParser):
         self.pending_tag = bytearray()
 
     def clone(self) -> 'FLVParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = FLVParser()
         new_parser.is_open = self.is_open
         new_parser.header_length = self.header_length
@@ -29,6 +40,7 @@ class FLVParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.header_length = 0
         self.bytes_to_skip = 0
@@ -39,6 +51,11 @@ class FLVParser(BaseFormatParser):
         self.pending_tag = bytearray()
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.header_length,
@@ -52,16 +69,43 @@ class FLVParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         return [b'FLV\x01']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -94,7 +138,7 @@ class FLVParser(BaseFormatParser):
                 if len(self.pending_header) < total_start_len:
                     return False, False, n, total_start_len - len(self.pending_header)
 
-            # Verification of FLV signature and PreviousTagSize0
+            # verification of FLV signature and PreviousTagSize0
             header_full = bytes(self.pending_header)
             if not header_full.startswith(b'FLV\x01') or header_full[-4:] != b'\x00\x00\x00\x00':
                 return True, False, 0, 0
@@ -103,7 +147,7 @@ class FLVParser(BaseFormatParser):
             self.header_verified = True
             self.pending_header = bytearray()
 
-        # Skip bytes requested from previous chunk
+        # skip bytes requested from previous chunk
         if self.bytes_to_skip > 0:
             skip_amount = min(n - idx, self.bytes_to_skip)
             idx += skip_amount

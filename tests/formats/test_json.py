@@ -1,18 +1,22 @@
+"""Unit tests for the JSON component."""
 import unittest
 from struct_carver.formats.text.json_parser import JSONParser
 
 
 class TestJSONParser(unittest.TestCase):
+    """Test suite for JSONParser parsing and carving."""
     def setUp(self):
         self.parser = JSONParser()
 
     def test_escaped_strings(self):
+        """Tests that escaped strings."""
         data = b'{"k{e}y": ["[\\"escaped\\"]", "value2"]}'
         tags, _ = self.parser.extract_tags(data)
         expected = [("{", False), ("[", False), ("[", True), ("{", True)]
         self.assertEqual(tags, expected)
 
     def test_cross_chunk_string_state(self):
+        """Tests that cross chunk string state."""
         chunk1 = b'{"k{e}y": ["started string ['
         chunk2 = b'] ended string", "value2"]}'
         tags1, _ = self.parser.extract_tags(chunk1)

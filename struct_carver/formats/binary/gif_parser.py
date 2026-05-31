@@ -1,11 +1,17 @@
+"""GIF format parser for Struct Carver!
+
+This module implements the parser for GIF binary format.
+"""
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class GIFParser(BaseFormatParser):
+    """Parser for GIF format files."""
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.bytes_to_skip = 0
         self.in_blocks = False
@@ -14,6 +20,11 @@ class GIFParser(BaseFormatParser):
         self.pending_header = bytearray()
 
     def clone(self) -> 'GIFParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = GIFParser()
         new_parser.is_open = self.is_open
         new_parser.bytes_to_skip = self.bytes_to_skip
@@ -24,6 +35,7 @@ class GIFParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.bytes_to_skip = 0
         self.in_blocks = False
@@ -32,6 +44,11 @@ class GIFParser(BaseFormatParser):
         self.pending_header = bytearray()
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.bytes_to_skip,
@@ -43,16 +60,43 @@ class GIFParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         return [b'GIF87a', b'GIF89a']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return [b'\x3B']
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -108,10 +152,10 @@ class GIFParser(BaseFormatParser):
                     break
                 block_type = data[idx]
                 if block_type == 0x3B:
-                    # Trailer / End of GIF
+                    # trailer / End of GIF
                     return False, True, idx + 1, 0
                 elif block_type == 0x2C:
-                    # Image Descriptor (need 10 bytes)
+                    # image Descriptor (need 10 bytes)
                     if n - idx < 10:
                         return False, False, idx, 10 - (n - idx)
                     flags = data[idx + 9]
@@ -119,17 +163,17 @@ class GIFParser(BaseFormatParser):
                     lct_size = 0
                     if has_lct:
                         lct_size = 3 * (2 ** ((flags & 0x07) + 1))
-                    # Skip image descriptor (10 bytes) + local color table + 1 byte LZW min code size
+                    # skip image descriptor (10 bytes) + local color table + 1 byte LZW min code size
                     self.bytes_to_skip = 10 + lct_size + 1
                     self.in_subblocks = True
-                    idx += 10 # This skips only the descriptor, table & code size handled by bytes_to_skip
+                    idx += 10 # this skips only the descriptor, table & code size handled by bytes_to_skip
                 elif block_type == 0x21:
-                    # Extension Block. Skip introducer + label (2 bytes)
+                    # extension Block. Skip introducer + label (2 bytes)
                     self.bytes_to_skip = 2
                     self.in_subblocks = True
                     idx += 1
                 else:
-                    # Unknown byte block. Fallback: skip this byte
+                    # unknown byte block. Fallback: skip this byte
                     idx += 1
 
         return False, False, n, 0

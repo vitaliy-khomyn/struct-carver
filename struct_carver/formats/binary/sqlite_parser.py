@@ -1,12 +1,18 @@
+"""SQLITE format parser for Struct Carver!
+
+This module implements the parser for SQLITE binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class SQLiteParser(BaseFormatParser):
+    """Parser for SQLITE format files."""
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.total_size = 0
         self.header_verified = False
@@ -14,6 +20,11 @@ class SQLiteParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def clone(self) -> 'SQLiteParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = SQLiteParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
@@ -23,6 +34,7 @@ class SQLiteParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.total_size = 0
         self.header_verified = False
@@ -30,6 +42,11 @@ class SQLiteParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.total_size,
@@ -40,16 +57,43 @@ class SQLiteParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         return [b'SQLite format 3\x00']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []  # SQLite relies entirely on the header-defined length
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -68,7 +112,7 @@ class SQLiteParser(BaseFormatParser):
                 if len(self.pending_header) < 32:
                     return False, False, n, 32 - len(self.pending_header)
 
-            # Process 32-byte header
+            # process 32-byte header
             header_block = bytes(self.pending_header[:32])
             page_size = struct.unpack('>H', header_block[16:18])[0]
             num_pages = struct.unpack('>I', header_block[28:32])[0]
@@ -77,11 +121,11 @@ class SQLiteParser(BaseFormatParser):
                 page_size = 65536  # SQLite specifies that a value of 1 means 65536 bytes
 
             if page_size == 0 or num_pages == 0:
-                return True, False, 0, 0  # Header is corrupted
+                return True, False, 0, 0  # header is corrupted
 
             self.total_size = page_size * num_pages
             
-            # Safety check
+            # safety check
             if self.total_size > 10 * 1024 * 1024 * 1024:
                 return True, False, 0, 0
 
@@ -91,7 +135,7 @@ class SQLiteParser(BaseFormatParser):
             self.pending_header = bytearray()
             self.bytes_to_skip = self.total_size - 32
 
-        # Skip bytes
+        # skip bytes
         if self.bytes_to_skip > 0:
             skip_amount = min(n - idx, self.bytes_to_skip)
             idx += skip_amount

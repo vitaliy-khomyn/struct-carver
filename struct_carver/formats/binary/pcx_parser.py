@@ -1,22 +1,28 @@
+"""PCX format parser for Struct Carver!
+
+This module implements the parser for PCX binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class PCXParser(BaseFormatParser):
+    """Parser for PCX format files."""
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.header_parsed = False
-        # Header fields
+        # header fields
         self.version = 0
         self.bits_per_pixel = 0
         self.width = 0
         self.height = 0
         self.n_planes = 0
         self.bytes_per_line = 0
-        # Parsing state
+        # parsing state
         self.current_line = 0
         self.current_plane = 0
         self.decoded_bytes_in_current_line = 0
@@ -26,6 +32,11 @@ class PCXParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def clone(self) -> 'PCXParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = PCXParser()
         new_parser.is_open = self.is_open
         new_parser.header_parsed = self.header_parsed
@@ -45,6 +56,7 @@ class PCXParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.header_parsed = False
         self.current_line = 0
@@ -56,6 +68,11 @@ class PCXParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.header_parsed,
@@ -70,8 +87,13 @@ class PCXParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         # PCX header starts with 0x0A (Manufacturer) + Version + 0x01 (Encoding)
-        # Valid versions: 0, 2, 3, 4, 5
+        # valid versions: 0, 2, 3, 4, 5
         return [
             b'\x0A\x00\x01',
             b'\x0A\x02\x01',
@@ -82,12 +104,34 @@ class PCXParser(BaseFormatParser):
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -157,7 +201,7 @@ class PCXParser(BaseFormatParser):
             if self.pending_run_count > 0:
                 run_count = self.pending_run_count
                 self.pending_run_count = 0
-                idx += 1  # Skip the value byte (which is at data[idx])
+                idx += 1  # skip the value byte (which is at data[idx])
             else:
                 b = data[idx]
                 if (b & 0xC0) == 0xC0:

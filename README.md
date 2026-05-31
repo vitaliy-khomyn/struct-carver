@@ -1,8 +1,8 @@
-# StructCarver
+# Struct Carver!
 
-**StructCarver** is a digital forensics file carver designed to extract and reassemble heavily fragmented, non-sequential files from raw disk images and memory dumps. 
+**Struct Carver!** is a digital forensics file carver designed to extract and reassemble heavily fragmented, non-sequential files from raw disk images and memory dumps. 
 
-Unlike traditional file carvers that rely strictly on sequential header-to-footer extraction, StructCarve aims to utilize semantic analysis to logically reconstruct files whose data blocks are scattered out-of-order across a storage medium.
+Unlike traditional file carvers that rely strictly on sequential header-to-footer extraction, Struct Carver! aims to utilize semantic analysis to logically reconstruct files whose data blocks are scattered out-of-order across a storage medium.
 
 ## The Problem
 
@@ -10,13 +10,13 @@ When a file system deletes a file, its data clusters become unallocated. Over ti
 
 ## Solution (Dual-Engine Architecture)
 
-StructCarver employs a **Dual-Engine Architecture** to handle both textual formats (`HTML`, `XML`, `JSON`) and binary hierarchical formats (`ZIP`, `PDF`).
+Struct Carver! employs a **Dual-Engine Architecture** to handle both textual formats (`HTML`, `XML`, `JSON`) and binary hierarchical formats (`ZIP`, `PDF`).
 
 ### 1. Semantic Stack Engine (Text)
 1. **Header Identification:** The carver finds an opening signature (e.g., `<?xml` or `<html>`).
 2. **Stack Tracking:** As it reads the data cluster, it pushes opening tags (e.g., `<div>`, `<user>`) to a stack and pops them when encountering closing tags.
 3. **Cluster Boundary Resolution:** When the carver reaches the end of a physical disk cluster and the stack is not empty, the file is incomplete.
-4. **Heuristic Search:** Instead of blindly appending the next sequential cluster (which might belong to a different file), StructCarver scans unallocated space for a cluster that logically resolves the current stack state, stitching non-contiguous segments back together.
+4. **Heuristic Search:** Instead of blindly appending the next sequential cluster (which might belong to a different file), Struct Carver! scans unallocated space for a cluster that logically resolves the current stack state, stitching non-contiguous segments back together.
 
 ### 2. Binary Offset Engine (Binary)
 Unlike text files, binary formats rely on byte offsets, lengths, and embedded signatures (e.g., `PK\x03\x04` for ZIP Local File Headers). The Binary Engine operates exclusively on raw bytes, validating chunk offsets and signature sequences to safely gap-jump over corrupted binary space without destructive string decoding.
@@ -40,7 +40,7 @@ Unlike text files, binary formats rely on byte offsets, lengths, and embedded si
 
 ## Usage
 
-Run StructCarve against a raw disk image (`.dd`, `.raw`, `.img`):
+Run Struct Carver! against a raw disk image (`.dd`, `.raw`, `.img`):
 
 	structcarver --image evidence.dd --output ./recovered_files/ --formats xml,html
 

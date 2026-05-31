@@ -1,25 +1,44 @@
+"""ZIP format parser for Struct Carver!
+
+This module provides the ZIPParser class, which parses ZIP archives (including office
+docx/xlsx formats) by tracking local file headers, data descriptors, and directory markers.
+"""
+
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class ZIPParser(BaseFormatParser):
+    """Parser for hierarchical binary ZIP formats (and DOCX/XLSX).
+
+    ZIP files contain multiple Local File Headers ('PK\\x03\\x04').
+    This parser tracks an internal state and only pushes an opening tag on the
+    first Local File Header, and closes it when it encounters the End of Central
+    Directory ('PK\\x05\\x06').
+
+    Attributes:
+        is_open (bool): True if the parser has successfully matched the ZIP header.
+        header_verified (bool): True if the header structure has been verified.
+        in_data_descriptor (bool): True if currently scanning for a data descriptor.
+        compressed_bytes_processed (int): Total compressed payload bytes processed.
+        pending_type (str): Type of structural block currently split across chunks.
+        pending_bytes (bytearray): Buffered bytes of a split block.
+        bytes_to_skip (int): Bytes of payload/directory data to bypass.
+        pending_var_len (int): Full size of a variable-length split block.
+        lookbehind (bytes): Cached bytes from the end of the previous chunk.
     """
-    Phase 3 Parser: Handles hierarchical binary ZIP formats (and DOCX/XLSX).
-    ZIP files contain multiple Local File Headers ('PK\x03\x04').
-    To remain compatible with the StackEngine, this parser tracks an internal
-    state and only pushes an opening tag on the first Local File Header,
-    and closes it when it encounters the End of Central Directory ('PK\x05\x06').
-    """
+
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the ZIP parser state."""
         self.is_open = False
         self.header_verified = False
         self.in_data_descriptor = False
         self.compressed_bytes_processed = 0
         
-        # State for handling split structures
+        # state for handling split structures
         self.pending_type = None
         self.pending_bytes = bytearray()
         self.bytes_to_skip = 0
@@ -27,6 +46,11 @@ class ZIPParser(BaseFormatParser):
         self.lookbehind = b""
 
     def clone(self) -> 'ZIPParser':
+        """Creates a clone of the parser with the current state.
+
+        Returns:
+            ZIPParser: The cloned parser instance.
+        """
         new_parser = ZIPParser()
         new_parser.is_open = self.is_open
         new_parser.header_verified = self.header_verified
@@ -41,6 +65,7 @@ class ZIPParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.header_verified = False
         self.in_data_descriptor = False
@@ -53,6 +78,11 @@ class ZIPParser(BaseFormatParser):
         self.lookbehind = b""
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+        Returns:
+            tuple: representation of parser state.
+        """
         return (
             self.is_open,
             self.header_verified,
@@ -67,21 +97,61 @@ class ZIPParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the list of header signature bytes.
+
+        Returns:
+            List[bytes]: Header signature list.
+        """
         return [b'PK\x03\x04']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the list of footer signature bytes.
+
+        Returns:
+            List[bytes]: Footer signature list.
+        """
         return [b'PK\x05\x06']
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub implementation for tag extraction (unused for binary formats).
+
+        Args:
+            data (bytes): Data block.
+
+        Returns:
+            Tuple[List[Tuple[str, bool]], int]: Empty tag list and zero offset.
+        """
         return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data chunk, preserving lookbehind bytes for the next check.
+
+        Args:
+            data (bytes): Input data block cluster.
+            bytes_remaining (int): Expected remaining payload/stream bytes.
+
+        Returns:
+            Tuple[bool, bool, int, int]: A tuple of:
+                - is_corrupted (bool): True if ZIP structure is malformed.
+                - is_complete (bool): True if EOF footer signature is reached.
+                - bytes_to_advance (int): Position cursor movement offset.
+                - bytes_remaining (int): Next remaining bytes expectation.
+        """
         result = self._analyze_binary_impl(data, bytes_remaining)
         self.lookbehind = data[-3:] if len(data) >= 3 else data
         return result
 
     def _analyze_binary_impl(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Internal binary analysis logic handling split header boundaries.
+
+        Args:
+            data (bytes): Input data block cluster.
+            bytes_remaining (int): Expected remaining payload/stream bytes.
+
+        Returns:
+            Tuple[bool, bool, int, int]: Same parser status tuple.
+        """
         if not self.is_open:
             start_idx = data.find(b'PK\x03\x04')
             if start_idx != -1:
@@ -106,7 +176,7 @@ class ZIPParser(BaseFormatParser):
         L = len(self.lookbehind)
         search_data = self.lookbehind + data
 
-        # Process any pending split structures
+        # process any pending split structures
         if self.pending_type is not None:
             if self.pending_type == 'local_header':
                 target_len = 30
@@ -205,7 +275,7 @@ class ZIPParser(BaseFormatParser):
                 else:
                     self.compressed_bytes_processed += len(accumulated_bytes)
 
-        # If we are in the middle of scanning for a data descriptor
+        # if we are in the middle of scanning for a data descriptor
         if self.in_data_descriptor:
             start_search_from = idx + L if idx > 0 else 0
             desc_idx_search = search_data.find(b'PK\x07\x08', start_search_from)
@@ -318,4 +388,3 @@ class ZIPParser(BaseFormatParser):
                         self.bytes_to_skip -= skip_amount
 
         return False, False, n, self.bytes_to_skip
-

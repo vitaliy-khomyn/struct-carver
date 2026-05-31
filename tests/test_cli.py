@@ -1,3 +1,4 @@
+"""Unit tests for the CLI component."""
 import os
 import json
 import tempfile
@@ -6,7 +7,9 @@ from struct_carver.cli import merge_worker_reports
 
 
 class TestCLI(unittest.TestCase):
+    """Test suite for CLI parsing and carving."""
     def test_merge_worker_reports(self):
+        """Tests that merge worker reports."""
         with tempfile.TemporaryDirectory() as temp_dir:
             report_w0 = {
                 "files": [

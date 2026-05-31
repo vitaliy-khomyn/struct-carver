@@ -1,3 +1,10 @@
+"""Forensic dashboard generator for Struct Carver!
+
+This module generates an interactive HTML dashboard summarizing the carved
+files, their reconstruction status (complete, partial, incomplete), and a
+visual representation of the file fragment distribution on disk.
+"""
+
 import os
 import json
 import argparse
@@ -5,6 +12,12 @@ from struct_carver.logger import setup_logger
 
 
 def generate_dashboard(json_path: str, output_html: str):
+    """Generates an interactive HTML dashboard from a Struct Carver! JSON report.
+
+    Args:
+        json_path (str): Path to the input carve_report.json.
+        output_html (str): Path where the HTML dashboard file should be written.
+    """
     logger = setup_logger("Dashboard")
 
     if not os.path.exists(json_path):
@@ -34,13 +47,13 @@ def generate_dashboard(json_path: str, output_html: str):
         total_size = f.get("total_size", 0)
         fragments = f.get("fragments", [])
 
-        # Build fragment details text
+        # build fragment details text
         frag_text = "<br>".join([
             f"Start: <code>{frag['start_offset']}</code> | End: <code>{frag['end_offset']}</code> | Size: {frag['size']} B"
             for frag in fragments
         ])
 
-        # Build a visual map representation (tracks and segments)
+        # build a visual map representation (tracks and segments)
         visual_map = ""
         if fragments:
             span_start = fragments[0]["start_offset"]
@@ -56,7 +69,7 @@ def generate_dashboard(json_path: str, output_html: str):
                     left_pct = 0
                     width_pct = 100
                 
-                # Cap minimum width at 2% for visual clarity
+                # cap minimum width at 2% for visual clarity
                 width_pct = max(2.0, width_pct)
                 
                 color_class = "segment-normal"
@@ -96,7 +109,7 @@ def generate_dashboard(json_path: str, output_html: str):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StructCarve Forensic Dashboard</title>
+    <title>Struct Carver! Forensic Dashboard</title>
     <style>
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; }}
         h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
@@ -133,7 +146,7 @@ def generate_dashboard(json_path: str, output_html: str):
 </head>
 <body>
 
-    <h1>StructCarve Forensic Dashboard</h1>
+    <h1>Struct Carver! Forensic Dashboard</h1>
     <div class="summary-cards">
         <div class="card"><h3>{total_files}</h3><p>Total Files Extracted</p></div>
         <div class="card" style="border-bottom: 4px solid #2ecc71;"><h3>{complete_files}</h3><p>Complete Recoveries</p></div>
@@ -191,7 +204,8 @@ def generate_dashboard(json_path: str, output_html: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate an interactive HTML dashboard from a StructCarve JSON report.")
+    """CLI entrypoint to generate the HTML dashboard from an existing JSON report."""
+    parser = argparse.ArgumentParser(description="Generate an interactive HTML dashboard from a Struct Carver! JSON report.")
     parser.add_argument(
         '-i', '--input',
         required=True,

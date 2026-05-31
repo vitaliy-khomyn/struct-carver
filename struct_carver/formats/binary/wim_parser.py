@@ -1,13 +1,19 @@
+"""WIM format parser for Struct Carver!
+
+This module implements the parser for WIM binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class WIMParser(BaseFormatParser):
+    """Parser for WIM format files."""
     engine_type = "binary"
     ext = "wim"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.total_size = 0
         self.header_verified = False
@@ -16,6 +22,11 @@ class WIMParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def clone(self) -> 'WIMParser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = WIMParser()
         new_parser.is_open = self.is_open
         new_parser.total_size = self.total_size
@@ -26,6 +37,7 @@ class WIMParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.total_size = 0
         self.header_verified = False
@@ -34,6 +46,11 @@ class WIMParser(BaseFormatParser):
         self.bytes_to_skip = 0
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.total_size,
@@ -45,13 +62,31 @@ class WIMParser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
         return [b'MSWIM\x00\x00\x00']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def _parse_descriptor(self, data: bytes, offset: int) -> Tuple[int, int]:
@@ -59,11 +94,20 @@ class WIMParser(BaseFormatParser):
         Returns (offset, size).
         """
         raw_size = struct.unpack('<Q', data[offset : offset + 8])[0]
-        size = raw_size & 0x00FFFFFFFFFFFFFF  # Mask out flags in the top byte
+        size = raw_size & 0x00FFFFFFFFFFFFFF  # mask out flags in the top byte
         res_offset = struct.unpack('<Q', data[offset + 8 : offset + 16])[0]
         return res_offset, size
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 
@@ -98,7 +142,7 @@ class WIMParser(BaseFormatParser):
             header_block = bytes(self.pending_header[:self.header_size])
             max_offset = self.header_size
 
-            # Offset Table Descriptor (offset 48)
+            # offset Table Descriptor (offset 48)
             off, sz = self._parse_descriptor(header_block, 48)
             if sz > 0 and off > 0:
                 max_offset = max(max_offset, off + sz)
@@ -108,12 +152,12 @@ class WIMParser(BaseFormatParser):
             if sz > 0 and off > 0:
                 max_offset = max(max_offset, off + sz)
 
-            # Boot Metadata Descriptor (offset 96)
+            # boot Metadata Descriptor (offset 96)
             off, sz = self._parse_descriptor(header_block, 96)
             if sz > 0 and off > 0:
                 max_offset = max(max_offset, off + sz)
 
-            # Integrity Table Descriptor (offset 120, if header is large enough)
+            # integrity Table Descriptor (offset 120, if header is large enough)
             if self.header_size >= 144:
                 off, sz = self._parse_descriptor(header_block, 120)
                 if sz > 0 and off > 0:

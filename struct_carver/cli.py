@@ -1,3 +1,10 @@
+"""Command-line interface for Struct Carver!
+
+This module provides the main entry point to run the carving process, handle
+command line argument parsing, spawn parallel carving workers, merge reports,
+and generate the forensic dashboard.
+"""
+
 import os
 import sys
 import glob
@@ -20,6 +27,11 @@ SUPPORTED_FORMATS = [
 
 
 def carve_worker(args):
+    """Worker function for running Carver on a specific segment of the image file.
+
+    Args:
+        args (tuple): A tuple containing all parameters for Carver execution.
+    """
     image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density, profile = args
 
     custom_parsers = []
@@ -46,6 +58,12 @@ def carve_worker(args):
 
 
 def merge_worker_reports(output_dir, error_message=None):
+    """Merges separate JSON reports from individual worker threads into a single report.
+
+    Args:
+        output_dir (str): Directory containing the worker report files.
+        error_message (str, optional): An optional error message to attach to the report.
+    """
     report_files = glob.glob(os.path.join(output_dir, "carve_report_w*.json"))
     if not report_files and not error_message:
         return
@@ -69,7 +87,7 @@ def merge_worker_reports(output_dir, error_message=None):
     with open(merged_path, 'w') as f:
         json.dump(merged_report, f, indent=4)
 
-    # Clean up temporary worker reports
+    # clean up temporary worker reports
     for rf in report_files:
         os.remove(rf)
 
@@ -78,7 +96,8 @@ def merge_worker_reports(output_dir, error_message=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="StructCarve: A semantic, non-sequential file carver for digital forensics.")
+    """Main execution entrypoint for parsing command line arguments and starting the carving task."""
+    parser = argparse.ArgumentParser(description="Struct Carver!: A semantic, non-sequential file carver for digital forensics.")
     parser.add_argument('-i', '--image', required=True, help="Path to the raw forensic image (.dd, .raw)")
     parser.add_argument('-o', '--output', required=True, help="Directory to save the reassembled files")
     parser.add_argument('-f', '--formats', default=",".join(SUPPORTED_FORMATS), help=f"Comma-separated list of formats. Supported: {', '.join(SUPPORTED_FORMATS)} (default: all)")
@@ -92,7 +111,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Dynamically determine the numbered output directory based on original image filename
+    # dynamically determine the numbered output directory based on original image filename
     img_name = os.path.basename(args.image)
     i = 1
     while True:
@@ -102,7 +121,7 @@ def main():
             break
         i += 1
 
-    # Ensure output directory exists before configuring loggers
+    # ensure output directory exists before configuring loggers
     os.makedirs(args.output, exist_ok=True)
     logger = setup_logger("Main", os.path.join(args.output, "audit_main.log"))
 
@@ -147,7 +166,7 @@ def main():
         sys.exit(1)
 
     logger.info("========================================")
-    logger.info("Starting StructCarve")
+    logger.info("Starting Struct Carver!")
     logger.info(f"Target Image: {args.image}")
     logger.info(f"Output Dir:   {args.output}")
     logger.info(f"Cluster Size: {args.cluster_size} bytes")

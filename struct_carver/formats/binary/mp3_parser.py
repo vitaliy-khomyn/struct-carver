@@ -1,12 +1,18 @@
+"""MP3 format parser for Struct Carver!
+
+This module implements the parser for MP3 binary format.
+"""
 import struct
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class MP3Parser(BaseFormatParser):
+    """Parser for MP3 format files."""
     engine_type = "binary"
 
     def __init__(self):
+        """Initializes the parser state."""
         self.is_open = False
         self.id3_parsed = False
         self.id3_size = 0
@@ -17,6 +23,11 @@ class MP3Parser(BaseFormatParser):
         self.pending_header = bytearray()
 
     def clone(self) -> 'MP3Parser':
+        """Creates a clone of this parser with its current state.
+
+            Returns:
+                BaseFormatParser: Cloned parser instance.
+        """
         new_parser = MP3Parser()
         new_parser.is_open = self.is_open
         new_parser.id3_parsed = self.id3_parsed
@@ -29,6 +40,7 @@ class MP3Parser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial values."""
         self.is_open = False
         self.id3_parsed = False
         self.id3_size = 0
@@ -39,6 +51,11 @@ class MP3Parser(BaseFormatParser):
         self.pending_header = bytearray()
 
     def state_tuple(self) -> tuple:
+        """Returns a representation of the parser state for caching.
+
+            Returns:
+                tuple: Hashable parser state.
+        """
         return (
             self.is_open,
             self.id3_parsed,
@@ -52,14 +69,32 @@ class MP3Parser(BaseFormatParser):
 
     @property
     def header_signatures(self) -> List[bytes]:
-        # Commonly starts with 'ID3' or a frame sync (0xFF + high bits)
+        """Gets the header signatures for this format.
+
+            Returns:
+                List[bytes]: Header signatures.
+        """
+        # commonly starts with 'ID3' or a frame sync (0xFF + high bits)
         return [b'ID3', b'\xFF\xFB', b'\xFF\xF3', b'\xFF\xF2', b'\xFF\xFA']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the footer signatures for this format.
+
+            Returns:
+                List[bytes]: Footer signatures.
+        """
         return []
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Stub for tag extraction.
+
+            Args:
+                data (bytes): Input data block.
+
+            Returns:
+                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
+        """
         return [], 0
 
     def _parse_frame_size(self, header: bytes) -> int:
@@ -72,29 +107,29 @@ class MP3Parser(BaseFormatParser):
         b2 = header[2]
         b3 = header[3]
 
-        # Frame sync must be 11 bits (0xFF and 0xE0)
+        # frame sync must be 11 bits (0xFF and 0xE0)
         if b0 != 0xFF or (b1 & 0xE0) != 0xE0:
             return -1
 
-        # Extract MPEG version, Layer, Bitrate, Sample Rate, and Padding
+        # extract MPEG version, Layer, Bitrate, Sample Rate, and Padding
         version = (b1 & 0x18) >> 3
         layer = (b1 & 0x06) >> 1
         bitrate_idx = (b2 & 0xF0) >> 4
         sample_rate_idx = (b2 & 0x0C) >> 2
         padding = (b2 & 0x02) >> 1
 
-        if version == 1: # Reserved
+        if version == 1: # reserved
             return -1
-        if layer == 0: # Reserved
+        if layer == 0: # reserved
             return -1
         if bitrate_idx == 0 or bitrate_idx == 15: # Free/Invalid bitrate
             return -1
-        if sample_rate_idx == 3: # Reserved sample rate
+        if sample_rate_idx == 3: # reserved sample rate
             return -1
 
-        # Bitrate table (kbps)
-        # Columns: Layer I, Layer II, Layer III
-        # Rows: 1 to 14
+        # bitrate table (kbps)
+        # columns: Layer I, Layer II, Layer III
+        # rows: 1 to 14
         bitrate_table_v1 = {
             3: [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448], # L1
             2: [32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],    # L2
@@ -106,7 +141,7 @@ class MP3Parser(BaseFormatParser):
             1: [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
         }
 
-        # Sampling rate table (Hz)
+        # sampling rate table (Hz)
         sample_rate_table = {
             3: [44100, 48000, 32000], # MPEG Version 1
             2: [22050, 24000, 16000], # MPEG Version 2
@@ -126,18 +161,27 @@ class MP3Parser(BaseFormatParser):
         bitrate = bitrates[bitrate_idx - 1] * 1000
         sample_rate = sample_rates[sample_rate_idx]
 
-        if layer == 3: # Layer I
+        if layer == 3: # layer I
             return ((12 * bitrate) // sample_rate + padding) * 4
-        elif layer == 2: # Layer II
+        elif layer == 2: # layer II
             return (144 * bitrate) // sample_rate + padding
-        elif layer == 1: # Layer III
-            # For MPEG 1 Layer III, coefficient is 144. For MPEG 2/2.5 Layer III, coefficient is 72.
+        elif layer == 1: # layer III
+            # for MPEG 1 Layer III, coefficient is 144. For MPEG 2/2.5 Layer III, coefficient is 72.
             coeff = 144 if version == 3 else 72
             return (coeff * bitrate) // sample_rate + padding
 
         return -1
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
+        """Analyzes a binary data block to check signature/structure boundaries.
+
+            Args:
+                data (bytes): Input data block.
+                bytes_remaining (int, optional): Bytes remaining from previous block.
+
+            Returns:
+                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        """
         n = len(data)
         idx = 0
 

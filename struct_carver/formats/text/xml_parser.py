@@ -1,10 +1,25 @@
+"""XML format parser for Struct Carver!
+
+This module provides the XMLParser class, which parses XML document streams,
+extracting tags while handling comments and CDATA sections.
+"""
+
 import re
 from typing import List, Tuple
 from ..base import BaseFormatParser
 
 
 class XMLParser(BaseFormatParser):
+    """Parser for XML documents that validates structure using nested tags.
+
+    Attributes:
+        in_cdata (bool): True if parsing is currently inside a CDATA block.
+        in_comment (bool): True if parsing is currently inside an XML comment.
+        is_corrupted (bool): True if illegal control bytes are detected.
+    """
+
     def __init__(self):
+        """Initializes the XML parser state and tag pattern."""
         self.tag_pattern = re.compile(rb'<(/?)(\w+)([^>]*)>')
 
         self.in_cdata = False
@@ -12,6 +27,11 @@ class XMLParser(BaseFormatParser):
         self.is_corrupted = False
 
     def clone(self) -> 'XMLParser':
+        """Creates a clone of the parser with the current state.
+
+        Returns:
+            XMLParser: The cloned parser instance.
+        """
         new_parser = XMLParser()
         new_parser.in_cdata = self.in_cdata
         new_parser.in_comment = self.in_comment
@@ -19,25 +39,50 @@ class XMLParser(BaseFormatParser):
         return new_parser
 
     def reset(self):
+        """Resets the parser state back to initial default values."""
         self.in_cdata = False
         self.in_comment = False
         self.is_corrupted = False
 
     def state_tuple(self) -> tuple:
+        """Returns a hashable tuple representing the internal parser state.
+
+        Returns:
+            tuple: representation of parser state.
+        """
         return (self.in_cdata, self.in_comment, self.is_corrupted)
 
     @property
     def header_signatures(self) -> List[bytes]:
+        """Gets the list of header signature bytes.
+
+        Returns:
+            List[bytes]: Header signature list.
+        """
         return [b'<?xml', b'<html']
 
     @property
     def footer_signatures(self) -> List[bytes]:
+        """Gets the list of footer signature bytes.
+
+        Returns:
+            List[bytes]: Footer signature list.
+        """
         return [b'</root>', b'</html>']
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
+        """Extracts XML tag elements, skipping CDATA and comments.
+
+        Args:
+            data (bytes): Input data block cluster to parse.
+
+        Returns:
+            Tuple[List[Tuple[str, bool]], int]: List of parsed tags and the
+                last processed byte offset.
+        """
         tags = []
         
-        # Check for binary control bytes (strictly illegal in XML)
+        # check for binary control bytes (strictly illegal in XML)
         for b in data:
             if b < 32 and b not in (9, 10, 13):
                 self.is_corrupted = True
