@@ -31,25 +31,59 @@ Unlike text files, binary formats rely on byte offsets, lengths, and embedded si
 
 ## Installation
 
-*(Instructions on how to clone, install dependencies, and build the project will go here.)*
-*(For now, they are incomplete and are the subject to change.)*
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/vitaliy-khomyn/struct-carver.git
+   cd struct-carver
+   ```
 
-	git clone https://github.com/vitaliy-khomyn/struct-carver
-	cd struct-carver
-	# e.g., pip install -r requirements.txt or make build
+2. **Set up a virtual environment (recommended):**
+   ```bash
+   python -m venv venv
+   # On Windows:
+   venv\Scripts\activate
+   # On macOS/Linux:
+   source venv/bin/activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Install the package (to enable the `structcarver` CLI command globally):**
+   ```bash
+   pip install .
+   ```
+
+5. **Run the test suite to verify the installation:**
+   ```bash
+   python run_tests.py
+   ```
 
 ## Usage
 
-Run Struct Carver! against a raw disk image (`.dd`, `.raw`, `.img`):
+You can run the carver using either the installed global command `structcarver` or directly via Python with the package module:
 
-	structcarver --image evidence.dd --output ./recovered_files/ --formats xml,html
+```bash
+# Using the globally installed CLI entry point
+structcarver --image evidence.dd --output ./recovered_files/ --formats xml,html,pdf,zip -d
 
+# Or running directly via Python module
+python -m struct_carver.cli --image evidence.dd --output ./recovered_files/ --formats xml,html,pdf,zip -d
+```
 
-**Options:**
-* `-i, --image`: Path to the raw forensic image.
-* `-o, --output`: Directory to save the reassembled files.
-* `-f, --formats`: Comma-separated list of formats to carve (default: html, xml).
-* `--verbose`: Output detailed logs of the stack-matching process for forensic auditing.
+### Options:
+* `-i, --image` (required): Path to the raw forensic image file (e.g., `.dd`, `.raw`, `.img`).
+* `-o, --output` (required): Output directory to store the carved files, audit logs, and reports.
+* `-f, --formats`: Comma-separated list of formats to carve (default: all supported formats).
+* `-c, --cluster-size`: Disk cluster block size in bytes (default: `4096`).
+* `-w, --workers`: Number of concurrent worker threads/processes for processing (default: `1`).
+* `--config`: Path to a custom JSON configuration file to define additional linear formats dynamically.
+* `--max-search`: Maximum number of clusters to scan ahead during a gap-jump search (default: `1000`).
+* `--text-density`: Threshold ratio (0.0 to 1.0) of printable characters to accept non-markup text clusters (default: `0.8`).
+* `-d, --dashboard`: Automatically generate an interactive HTML dashboard (`dashboard.html`) summarizing the results.
+* `--profile`: Enable cProfile performance profiling per worker (saves `.prof` data per worker).
 
 ## Roadmap
 
