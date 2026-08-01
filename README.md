@@ -82,6 +82,7 @@ python -m struct_carver.cli --image evidence.dd --output ./recovered_files/ --fo
 * `--config`: Path to a custom JSON configuration file to define additional linear formats dynamically.
 * `--max-search`: Maximum number of clusters to scan ahead during a gap-jump search (default: `1000`).
 * `--text-density`: Threshold ratio (0.0 to 1.0) of printable characters to accept non-markup text clusters (default: `0.8`).
+* `--max-gap-fill`: Maximum bytes to zero-fill across an inter-fragment gap in bytes (default: `104857600` / 100MB).
 * `-d, --dashboard`: Automatically generate an interactive HTML dashboard (`dashboard.html`) summarizing the results.
 * `--profile`: Enable cProfile performance profiling per worker (saves `.prof` data per worker).
 

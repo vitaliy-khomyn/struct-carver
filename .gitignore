@@ -221,3 +221,4 @@ coverage.json
 
 # graphs
 graphs/*
+auxilliary/*

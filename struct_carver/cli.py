@@ -32,7 +32,11 @@ def carve_worker(args):
     Args:
         args (tuple): A tuple containing all parameters for Carver execution.
     """
-    image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density, profile = args
+    if len(args) == 12:
+        image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density, profile, max_gap_fill = args
+    else:
+        image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density, profile = args
+        max_gap_fill = 100 * 1024 * 1024
 
     custom_parsers = []
     for cfg in custom_configs:
@@ -42,7 +46,8 @@ def carve_worker(args):
 
     carver = Carver(
         cluster_size=cluster_size, formats=formats, custom_parsers=custom_parsers,
-        max_search_clusters=max_search, text_density_threshold=density
+        max_search_clusters=max_search, text_density_threshold=density,
+        max_gap_fill_bytes=max_gap_fill
     )
 
     if profile:
@@ -106,6 +111,7 @@ def main():
     parser.add_argument('--config', type=str, help="Path to a custom JSON config file for defining additional linear binary formats.")
     parser.add_argument('--max-search', type=int, default=1000, help="Max clusters to scan during a gap-jump (default: 1000)")
     parser.add_argument('--text-density', type=float, default=0.8, help="Text density threshold for accepting tagless clusters (default: 0.8)")
+    parser.add_argument('--max-gap-fill', type=int, default=100 * 1024 * 1024, help="Max bytes to zero-fill across a gap jump in bytes (default: 100MB)")
     parser.add_argument('-d', '--dashboard', action='store_true', help="Automatically generate an interactive HTML dashboard upon completion.")
     parser.add_argument('--profile', action='store_true', help="Enable cProfile performance profiling per worker.")
 
@@ -145,6 +151,10 @@ def main():
         logger.error("Text density threshold must be between 0.0 and 1.0.")
         sys.exit(1)
 
+    if args.max_gap_fill <= 0:
+        logger.error("Max gap fill bytes must be greater than 0.")
+        sys.exit(1)
+
     custom_configs = []
     if args.config:
         if not os.path.isfile(args.config):
@@ -173,6 +183,7 @@ def main():
     logger.info(f"Formats:      {', '.join(valid_formats)}")
     logger.info(f"Max Search:   {args.max_search} clusters")
     logger.info(f"Text Density: {args.text_density * 100}%")
+    logger.info(f"Max Gap Fill: {args.max_gap_fill // (1024 * 1024)} MB")
     logger.info(f"Workers:      {args.workers}")
     if custom_configs:
         logger.info(f"Custom Types: {len(custom_configs)} formats loaded from config")
@@ -189,7 +200,7 @@ def main():
     for i in range(args.workers):
         start = i * chunk_size
         end = start + chunk_size if i < args.workers - 1 else total_size
-        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i, custom_configs, args.max_search, args.text_density, args.profile))
+        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i, custom_configs, args.max_search, args.text_density, args.profile, args.max_gap_fill))
 
     try:
         if args.workers == 1:

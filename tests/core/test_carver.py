@@ -543,3 +543,36 @@ class TestCarverIntegration(unittest.TestCase):
         data = b'random garbage bytes'
         is_corr, is_comp, bytes_to_adv, expected = parser.analyze_binary(data)
         self.assertTrue(is_corr, "Should detect fragmentation/corruption when signature is missing.")
+
+    def test_chunked_zero_fill_with_cap(self):
+        """Tests that chunked zero-filling works and respects max_gap_fill_bytes ceiling."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            img_path = os.path.join(temp_dir, "evidence_pdf_gap.dd")
+            out_dir = os.path.join(temp_dir, "recovered_files")
+
+            cluster_size = 64
+            pre = b"%pdf-1.4\n1 0 obj << /Length 20 >> endobj stream\n"
+            cluster1 = pre + (b'A' * 16)
+            cluster2 = (b'B' * 64)  # corrupted cluster
+            gap_cluster = (b'\x00' * 64)  # unallocated gap cluster
+            cluster3 = b'CCCC\nendstream\n%%eof'.ljust(64, b'\x00')  # candidate continuation
+
+            with open(img_path, 'wb') as f:
+                f.write(cluster1)
+                f.write(cluster2)
+                f.write(gap_cluster)
+                f.write(cluster3)
+
+            # set max_gap_fill_bytes to 32 bytes (less than the 64 byte gap)
+            carver = Carver(cluster_size=cluster_size, formats=['pdf'], max_gap_fill_bytes=32)
+            carver.carve(img_path, out_dir)
+
+            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
+            self.assertEqual(len(carved_files), 1)
+
+            with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
+                data = f.read()
+
+            self.assertIn(b'A'*16, data)
+            self.assertIn(b'CCCC\nendstream', data)
+            self.assertIn(b'\x00'*32, data)
