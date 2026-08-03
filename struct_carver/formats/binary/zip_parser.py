@@ -1,4 +1,4 @@
-"""ZIP format parser for Struct Carver!
+"""ZIP format parser.
 
 This module provides the ZIPParser class, which parses ZIP archives (including office
 docx/xlsx formats) by tracking local file headers, data descriptors, and directory markers.
@@ -6,10 +6,10 @@ docx/xlsx formats) by tracking local file headers, data descriptors, and directo
 
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class ZIPParser(BaseFormatParser):
+class ZIPParser(BaseBinaryParser):
     """Parser for hierarchical binary ZIP formats (and DOCX/XLSX).
 
     ZIP files contain multiple Local File Headers ('PK\\x03\\x04').
@@ -28,8 +28,6 @@ class ZIPParser(BaseFormatParser):
         pending_var_len (int): Full size of a variable-length split block.
         lookbehind (bytes): Cached bytes from the end of the previous chunk.
     """
-
-    engine_type = "binary"
 
     def __init__(self):
         """Initializes the ZIP parser state."""
@@ -112,17 +110,6 @@ class ZIPParser(BaseFormatParser):
             List[bytes]: Footer signature list.
         """
         return [b'PK\x05\x06']
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub implementation for tag extraction (unused for binary formats).
-
-        Args:
-            data (bytes): Data block.
-
-        Returns:
-            Tuple[List[Tuple[str, bool]], int]: Empty tag list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data chunk, preserving lookbehind bytes for the next check.

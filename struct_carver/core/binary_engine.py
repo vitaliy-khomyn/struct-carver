@@ -1,4 +1,4 @@
-"""Binary parsing state engine for Struct Carver!
+"""Binary parsing state engine.
 
 This module implements the BinaryOffsetEngine, which tracks the integrity
 and completion state of files that rely on size structure offsets.

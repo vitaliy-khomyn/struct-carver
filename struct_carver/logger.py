@@ -1,4 +1,4 @@
-"""Logging utilities for Struct Carver!
+"""Logging utilities.
 
 This module sets up logging handlers and formatters to support progress bar
 reporting using tqdm alongside standard file and console logging.

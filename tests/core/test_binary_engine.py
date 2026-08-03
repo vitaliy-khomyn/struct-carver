@@ -1,4 +1,4 @@
-"""Unit tests for BinaryOffsetEngine in Struct Carver!
+"""Unit tests for BinaryOffsetEngine.
 
 Verifies state tracking, corruption flags, cloning isolation, and reset behavior.
 """

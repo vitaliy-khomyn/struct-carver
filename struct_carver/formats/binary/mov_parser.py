@@ -1,4 +1,4 @@
-"""MOV format parser for Struct Carver!
+"""MOV format parser.
 
 This module implements the parser for MOV binary format.
 """

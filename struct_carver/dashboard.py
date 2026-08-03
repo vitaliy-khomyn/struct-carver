@@ -1,4 +1,4 @@
-"""Forensic dashboard generator for Struct Carver!
+"""Forensic dashboard generator.
 
 This module generates an interactive HTML dashboard summarizing the carved
 files, their reconstruction status (complete, partial, incomplete), and a
@@ -12,7 +12,7 @@ from struct_carver.logger import setup_logger
 
 
 def generate_dashboard(json_path: str, output_html: str):
-    """Generates an interactive HTML dashboard from a Struct Carver! JSON report.
+    """Generates an interactive HTML dashboard from a carve report JSON file.
 
     Args:
         json_path (str): Path to the input carve_report.json.
@@ -200,7 +200,7 @@ def generate_dashboard(json_path: str, output_html: str):
 
 def main():
     """CLI entrypoint to generate the HTML dashboard from an existing JSON report."""
-    parser = argparse.ArgumentParser(description="Generate an interactive HTML dashboard from a Struct Carver! JSON report.")
+    parser = argparse.ArgumentParser(description="Generate an interactive HTML dashboard from a carve report JSON file.")
     parser.add_argument(
         '-i', '--input',
         required=True,

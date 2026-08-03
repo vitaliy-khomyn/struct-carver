@@ -1,4 +1,4 @@
-"""Format parser registry for Struct Carver!
+"""Format parser registry.
 
 This module manages format parser discovery, initialization, custom parser
 registration, and extension lookups.

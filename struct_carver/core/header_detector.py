@@ -1,4 +1,4 @@
-"""Header detector module for Struct Carver!
+"""Header detector module.
 
 This module handles file signature scanning across buffer boundaries,
 control byte validation for textual parsers, and engine state initialization.

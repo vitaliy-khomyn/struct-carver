@@ -1,4 +1,4 @@
-"""Unit tests for the NEW_BINARY component."""
+"""Unit tests for multimedia and archive binary format parsers."""
 import unittest
 import struct
 import zlib

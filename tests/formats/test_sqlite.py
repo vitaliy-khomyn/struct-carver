@@ -1,7 +1,7 @@
-"""Unit tests for SQLiteParser in Struct Carver!
+"""Unit tests for SQLiteParser.
 
 Verifies SQLite header decoding, page size calculations (including the 65536 edge case),
-spillover handling across multiple clusters, and corruption detection.
+and spillover handling across multiple clusters.
 """
 
 import unittest

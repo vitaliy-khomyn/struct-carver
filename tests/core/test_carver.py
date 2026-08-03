@@ -1,4 +1,4 @@
-"""Integration tests for Carver orchestrator in Struct Carver!
+"""Integration tests for Carver orchestrator.
 
 Verifies non-sequential gap jumping across corrupted clusters for textual (XML, JSON)
 and binary (PDF, ZIP) formats, multithreaded worker partitioning, custom dynamic

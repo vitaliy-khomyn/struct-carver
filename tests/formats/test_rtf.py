@@ -1,4 +1,4 @@
-"""Unit tests for RTFParser in Struct Carver!
+"""Unit tests for RTFParser.
 
 Verifies RTF brace structure extraction and escaped character handling.
 """

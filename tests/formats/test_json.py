@@ -1,4 +1,4 @@
-"""Unit tests for JSONParser in Struct Carver!
+"""Unit tests for JSONParser.
 
 Verifies bracket/brace extraction, escaped quote handling inside strings, and cross-chunk string states.
 """

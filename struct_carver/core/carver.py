@@ -1,4 +1,4 @@
-"""Core carving logic and orchestrator for Struct Carver!
+"""Core carving logic and orchestrator.
 
 This module provides the main Carver class, which orchestrates disk image buffering,
 signature detection, gap-jumping heuristics, and post-carving processing.
@@ -20,7 +20,7 @@ from struct_carver.core.metadata import MetadataExtractor
 from struct_carver.formats.registry import ParserRegistry
 from struct_carver.logger import setup_logger
 
-# Re-export BufferedClusterReader for backwards compatibility
+# re-export BufferedClusterReader for backwards compatibility
 __all__ = ['Carver', 'BufferedClusterReader']
 
 
@@ -157,7 +157,7 @@ class Carver:
                 frag["fragment_hash"] = self.hasher.hash_file_range(
                     image_path, frag["start_offset"], frag["size"]
                 )
-        except Exception:
+        except (OSError, ValueError):
             pass
 
     def _finalize_file_record(

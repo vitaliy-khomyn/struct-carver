@@ -1,4 +1,4 @@
-"""WMA format parser for Struct Carver!
+"""WMA format parser.
 
 This module implements the parser for WMA binary format.
 """

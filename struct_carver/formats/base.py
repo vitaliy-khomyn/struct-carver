@@ -1,4 +1,4 @@
-"""Base interface for format parsers in Struct Carver!
+"""Base interface for format parsers.
 
 This module defines the abstract class hierarchy for file format parsers:
 - BaseFormatParser: Root class defining common lifecycle, signatures, and gap-jumping hooks.

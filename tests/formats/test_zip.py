@@ -1,4 +1,4 @@
-"""Unit tests for the ZIP component."""
+"""Unit tests for the ZIP format parser."""
 import unittest
 import struct
 from struct_carver.formats.binary.zip_parser import ZIPParser

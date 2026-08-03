@@ -1,4 +1,4 @@
-"""Base RIFF container format parser for Struct Carver!
+"""Base RIFF container format parser.
 
 This module provides the BaseRIFFParser class, which unifies common parsing logic
 for RIFF-based container multimedia files such as WAV audio and AVI video.

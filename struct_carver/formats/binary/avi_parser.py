@@ -1,4 +1,4 @@
-"""AVI format parser for Struct Carver!
+"""AVI format parser.
 
 This module implements the parser for AVI binary format.
 """

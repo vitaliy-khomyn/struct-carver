@@ -1,4 +1,4 @@
-"""Shannon entropy calculation module for Struct Carver!
+"""Shannon entropy calculation module.
 
 This module provides functions to calculate the Shannon entropy of byte sequences
 and entire files, enabling the detection of encrypted or compressed containers,

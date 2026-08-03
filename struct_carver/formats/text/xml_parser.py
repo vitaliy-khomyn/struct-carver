@@ -1,4 +1,4 @@
-"""XML format parser for Struct Carver!
+"""XML format parser.
 
 This module provides the XMLParser class, which parses XML document streams,
 extracting tags while handling comments and CDATA sections.

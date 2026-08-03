@@ -1,4 +1,4 @@
-"""GZ format parser for Struct Carver!
+"""GZ format parser.
 
 This module implements the parser for GZ binary format.
 """

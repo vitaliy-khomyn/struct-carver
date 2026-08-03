@@ -1,4 +1,4 @@
-"""Command-line interface for Struct Carver!
+"""Command-line interface.
 
 This module provides the main entry point to run the carving process, handle
 command line argument parsing, spawn parallel carving workers, merge reports,
@@ -192,7 +192,7 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
             with open(rf, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 merged_report["files"].extend(data.get("files", []))
-        except Exception:
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     # apply multi-worker boundary deduplication
@@ -217,7 +217,7 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
         csv_path = os.path.join(output_dir, "manifest.csv")
         with open(csv_path, "w", encoding="utf-8") as f_csv:
             f_csv.write(hasher.generate_csv_manifest(merged_report["files"]))
-    except Exception:
+    except (OSError, ValueError):
         pass
 
     # clean up temporary worker reports
@@ -233,7 +233,7 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
 
 def main():
     """Main execution entrypoint for parsing command line arguments and starting the carving task."""
-    parser = argparse.ArgumentParser(description="Struct Carver!: A semantic, non-sequential file carver for digital forensics.")
+    parser = argparse.ArgumentParser(description="Struct Carver: A semantic, non-sequential file carver for digital forensics.")
     parser.add_argument('-i', '--image', required=True, help="Path to the raw forensic image (.dd, .raw)")
     parser.add_argument('-o', '--output', required=True, help="Directory to save the reassembled files")
     parser.add_argument('-f', '--formats', default=",".join(SUPPORTED_FORMATS), help=f"Comma-separated list of formats. Supported: {', '.join(SUPPORTED_FORMATS)} (default: all)")
@@ -342,7 +342,7 @@ def main():
     }
 
     logger.info("========================================")
-    logger.info("Starting Struct Carver!")
+    logger.info("Starting Struct Carver")
     logger.info(f"Target Image: {args.image}")
     logger.info(f"Image SHA256: {source_sha256}")
     logger.info(f"Image MD5:    {source_md5}")

@@ -1,4 +1,4 @@
-"""Buffered disk cluster reader for Struct Carver!
+"""Buffered disk cluster reader.
 
 This module provides the BufferedClusterReader class, which pulls large chunks
 of raw disk image data into memory buffers to reduce I/O system calls during scanning.

@@ -1,14 +1,13 @@
-"""MPG format parser for Struct Carver!
+"""MPG format parser.
 
 This module implements the parser for MPG binary format.
 """
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class MPGParser(BaseFormatParser):
+class MPGParser(BaseBinaryParser):
     """Parser for MPG format files."""
-    engine_type = "binary"
     ext = "mpg"
 
     # maximum MPEG file size before we stop and emit what we have
@@ -65,17 +64,6 @@ class MPGParser(BaseFormatParser):
         """
         # MPEG End Code
         return [b'\x00\x00\x01\xB9']
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.

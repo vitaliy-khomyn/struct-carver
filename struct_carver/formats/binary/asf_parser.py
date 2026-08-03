@@ -1,4 +1,4 @@
-"""Base ASF container format parser for Struct Carver!
+"""Base ASF container format parser.
 
 This module provides the BaseASFParser class, which unifies parsing logic
 for Advanced Systems Format (ASF) container multimedia files (WMA and WMV).

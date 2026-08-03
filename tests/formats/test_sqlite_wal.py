@@ -1,4 +1,4 @@
-"""Unit tests for the SQLITE_WAL component."""
+"""Unit tests for the SQLite WAL format parser."""
 import unittest
 import struct
 from struct_carver.formats.binary.sqlite_wal_parser import SQLiteWALParser

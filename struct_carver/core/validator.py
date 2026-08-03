@@ -1,4 +1,4 @@
-"""Forensic integrity validator for Struct Carver!
+"""Forensic integrity validator.
 
 This module provides the FileValidator class, which inspects carved files
 using format-specific validation routines (e.g. ZIP CRC32 checks, SQLite PRAGMA

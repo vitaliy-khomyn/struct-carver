@@ -1,15 +1,14 @@
-"""SEVEN_Z format parser for Struct Carver!
+"""SEVEN_Z format parser.
 
 This module implements the parser for SEVEN_Z binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class SevenZParser(BaseFormatParser):
+class SevenZParser(BaseBinaryParser):
     """Parser for SEVEN_Z format files."""
-    engine_type = "binary"
     ext = "7z"
 
     def __init__(self):
@@ -73,17 +72,6 @@ class SevenZParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.

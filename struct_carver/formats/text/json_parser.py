@@ -1,4 +1,4 @@
-"""JSON format parser for Struct Carver!
+"""JSON format parser.
 
 This module provides the JSONParser class, which parses JSON documents
 by extracting structural braces and brackets while safely skipping escaped strings.

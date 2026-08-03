@@ -1,4 +1,4 @@
-"""Unit tests for StackEngine in Struct Carver!
+"""Unit tests for StackEngine.
 
 Verifies tag stack pushing, popping, corruption detection for mismatched tags,
 and deep copy isolation.

@@ -1,15 +1,14 @@
-"""WIM format parser for Struct Carver!
+"""WIM format parser.
 
 This module implements the parser for WIM binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class WIMParser(BaseFormatParser):
+class WIMParser(BaseBinaryParser):
     """Parser for WIM format files."""
-    engine_type = "binary"
     ext = "wim"
 
     def __init__(self):
@@ -77,17 +76,6 @@ class WIMParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def _parse_descriptor(self, data: bytes, offset: int) -> Tuple[int, int]:
         """Parses a 24-byte WIM Resource Descriptor.

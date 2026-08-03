@@ -1,15 +1,14 @@
-"""PNG format parser for Struct Carver!
+"""PNG format parser.
 
 This module implements the parser for PNG binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class PNGParser(BaseFormatParser):
+class PNGParser(BaseBinaryParser):
     """Parser for PNG format files."""
-    engine_type = "binary"
 
     def __init__(self):
         """Initializes the parser state."""
@@ -63,17 +62,6 @@ class PNGParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return [b'IEND']
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.

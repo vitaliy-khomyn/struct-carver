@@ -1,14 +1,13 @@
-"""GIF format parser for Struct Carver!
+"""GIF format parser.
 
 This module implements the parser for GIF binary format.
 """
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class GIFParser(BaseFormatParser):
+class GIFParser(BaseBinaryParser):
     """Parser for GIF format files."""
-    engine_type = "binary"
 
     def __init__(self):
         """Initializes the parser state."""
@@ -75,17 +74,6 @@ class GIFParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return [b'\x3B']
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.

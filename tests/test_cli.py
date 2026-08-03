@@ -1,4 +1,4 @@
-"""Unit tests for the CLI orchestration module in Struct Carver!
+"""Unit tests for the CLI orchestration module.
 
 Verifies worker report consolidation, fragment chronological sorting, temporary file cleanup,
 and manifest generation.

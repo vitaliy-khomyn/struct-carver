@@ -1,1 +1,1 @@
-"""HTML templates package for Struct Carver!"""
+"""HTML templates package."""

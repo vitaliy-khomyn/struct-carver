@@ -1,4 +1,4 @@
-"""Tag tracking stack engine for Struct Carver!
+"""Tag tracking stack engine.
 
 This module implements the StackEngine, which tracks opening and closing tags
 for hierarchical textual formats (such as HTML, XML) to verify balance and integrity.

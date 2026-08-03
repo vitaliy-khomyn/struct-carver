@@ -1,4 +1,4 @@
-"""MP4 format parser for Struct Carver!
+"""MP4 format parser.
 
 This module implements the parser for MP4 binary format.
 """

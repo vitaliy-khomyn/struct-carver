@@ -1,4 +1,4 @@
-"""Unit tests for HTMLParser in Struct Carver!
+"""Unit tests for HTMLParser.
 
 Verifies tag extraction, void element suppression, comment skipping, and cross-chunk comment state.
 """

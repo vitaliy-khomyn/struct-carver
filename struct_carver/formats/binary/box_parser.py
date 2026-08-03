@@ -1,4 +1,4 @@
-"""Base ISO Base Media / QuickTime Box format parser for Struct Carver!
+"""Base ISO Base Media / QuickTime Box format parser.
 
 This module provides the BaseBoxParser class, which unifies atom and box parsing logic
 for container multimedia formats such as MP4 and QuickTime MOV.

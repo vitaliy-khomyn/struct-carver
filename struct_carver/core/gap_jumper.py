@@ -1,4 +1,4 @@
-"""Gap jumper module for Struct Carver!
+"""Gap jumper module.
 
 This module provides the GapJumper class, which handles non-sequential gap-jumping sweeps,
 cluster candidate state evaluation, and candidate result caching.

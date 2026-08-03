@@ -1,15 +1,14 @@
-"""BMP format parser for Struct Carver!
+"""BMP format parser.
 
 This module implements the parser for BMP binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class BMPParser(BaseFormatParser):
+class BMPParser(BaseBinaryParser):
     """Parser for BMP format files."""
-    engine_type = "binary"
 
     def __init__(self):
         """Initializes the parser state."""
@@ -72,17 +71,6 @@ class BMPParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.

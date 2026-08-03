@@ -1,4 +1,4 @@
-"""Cryptographic hashing utilities for Struct Carver!
+"""Cryptographic hashing utilities.
 
 This module provides the CryptoHasher class for generating forensic hashes
 (SHA-256, MD5, SHA-1, SHA-512) for carved files and individual raw disk fragments.

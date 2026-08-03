@@ -1,4 +1,4 @@
-"""HTML format parser for Struct Carver!
+"""HTML format parser.
 
 This module provides the HTMLParser class, which parses HTML document streams,
 extracting semantic tag structures while ignoring void elements and comments.

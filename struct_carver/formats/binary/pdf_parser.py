@@ -1,4 +1,4 @@
-"""PDF format parser for Struct Carver!
+"""PDF format parser.
 
 This module provides the PDFParser class, which validates PDF stream syntax,
 length tags, and object delimiters, supporting gap-jumping over non-PDF clusters.
@@ -19,7 +19,6 @@ class PDFParser(BaseBinaryParser):
         header_verified (bool): True if the header was verified.
     """
 
-    engine_type = "binary"
     # pdfs can be heavily fragmented across large images; allow searching the
     # full image (10000 clusters = 40 MB) before giving up on a fragment.
     max_gap_clusters = 10000
@@ -82,17 +81,6 @@ class PDFParser(BaseBinaryParser):
             List[bytes]: Footer signature list.
         """
         return [b'%%eof']
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub implementation for tag extraction (unused for binary formats).
-
-        Args:
-            data (bytes): Data block.
-
-        Returns:
-            Tuple[List[Tuple[str, bool]], int]: Empty tag list and zero offset.
-        """
-        return [], 0
 
     def gap_jump_verify(self, data: bytes) -> bool:
         """Verifies if the candidate cluster looks like valid continuation data.

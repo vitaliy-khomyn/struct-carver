@@ -1,15 +1,14 @@
-"""RAR format parser for Struct Carver!
+"""RAR format parser.
 
 This module implements the parser for RAR binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class RARParser(BaseFormatParser):
+class RARParser(BaseBinaryParser):
     """Parser for RAR format files."""
-    engine_type = "binary"
     ext = "rar"
 
     def __init__(self):
@@ -87,17 +86,6 @@ class RARParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def _read_vint(self, data: bytes, offset: int) -> Tuple[int, int]:
         """Reads a Variable Length Integer (VINT) from data starting at offset.

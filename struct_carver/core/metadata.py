@@ -1,4 +1,4 @@
-"""Forensic metadata extractor module for Struct Carver!
+"""Forensic metadata extractor module.
 
 This module provides the MetadataExtractor class, which extracts embedded timestamps,
 authors, camera makes/models, and document properties from carved files (JPEG, PDF,
@@ -41,7 +41,7 @@ class MetadataExtractor:
                 return cls._extract_png_metadata(file_path)
             else:
                 return {}
-        except Exception:
+        except (OSError, struct.error, ValueError, IndexError, zipfile.BadZipFile, ET.ParseError):
             return {}
 
     @classmethod
@@ -100,7 +100,7 @@ class MetadataExtractor:
                     clean_str = str_bytes.decode("ascii", errors="replace").rstrip("\x00").strip()
                     if clean_str:
                         metadata[tag_names[tag]] = clean_str
-        except Exception:
+        except (OSError, struct.error, ValueError, IndexError):
             pass
         return metadata
 
@@ -128,7 +128,7 @@ class MetadataExtractor:
                         raw_val = text_chunks[paren_open + 1:paren_close].decode("latin1", errors="replace").strip()
                         prop_name = key.decode("ascii").lstrip("/").lower()
                         metadata[prop_name] = raw_val
-        except Exception:
+        except (OSError, ValueError, IndexError):
             pass
         return metadata
 
@@ -148,7 +148,7 @@ class MetadataExtractor:
                             if tag_clean in ["created", "modified", "creator", "lastmodifiedby", "title"]:
                                 if child.text:
                                     metadata[tag_clean] = child.text.strip()
-        except Exception:
+        except (zipfile.BadZipFile, OSError, KeyError, ET.ParseError, ValueError):
             pass
         return metadata
 
@@ -189,6 +189,6 @@ class MetadataExtractor:
                         break
                     else:
                         f.seek(chunk_len + 4, os.SEEK_CUR)  # skip data + CRC
-        except Exception:
+        except (OSError, struct.error, ValueError, IndexError):
             pass
         return metadata

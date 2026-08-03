@@ -1,15 +1,14 @@
-"""TIFF format parser for Struct Carver!
+"""TIFF format parser.
 
 This module implements the parser for TIFF binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class TIFFParser(BaseFormatParser):
+class TIFFParser(BaseBinaryParser):
     """Parser for TIFF format files."""
-    engine_type = "binary"
 
     def __init__(self):
         """Initializes the parser state."""
@@ -72,17 +71,6 @@ class TIFFParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.
@@ -185,7 +173,7 @@ class TIFFParser(BaseFormatParser):
                     max_offset = max(max_offset, next_ifd_offset + 4)
                     current_ifd = next_ifd
 
-            except Exception:
+            except (struct.error, IndexError, ValueError):
                 return True, False, 0, 0
 
             # if we successfully parsed all IFDs:

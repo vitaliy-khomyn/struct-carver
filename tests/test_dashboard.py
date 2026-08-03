@@ -1,4 +1,4 @@
-"""Unit tests for the forensic dashboard generation in Struct Carver!
+"""Unit tests for the forensic dashboard generation.
 
 Verifies HTML dashboard compilation from carve_report.json, metric card rendering,
 and fragment map layout.

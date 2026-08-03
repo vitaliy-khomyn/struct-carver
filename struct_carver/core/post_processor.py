@@ -1,4 +1,4 @@
-"""Post-processor module for Struct Carver!
+"""Post-processor module.
 
 This module provides the PostProcessor class, which executes post-carving hooks,
 detecting sub-types (e.g. Microsoft Office documents inside ZIP containers) and
@@ -37,7 +37,7 @@ class PostProcessor:
                         detected_ext = "xlsx"
                     elif "ppt/presentation.xml" in namelist:
                         detected_ext = "pptx"
-            except Exception as e:
+            except (zipfile.BadZipFile, OSError, KeyError) as e:
                 logger.error(f"Failed to read ZIP structure for Office detection: {e}")
                 return ext, filename
 
@@ -49,7 +49,7 @@ class PostProcessor:
                         os.rename(file_path, new_path)
                     logger.info(f"Detected Office document. Renamed {filename} to {new_filename}")
                     return detected_ext, new_filename
-                except Exception as e:
+                except OSError as e:
                     logger.error(f"Failed to rename Office document: {e}")
             else:
                 zip_out_dir = f"{file_path}_extracted"
@@ -57,6 +57,6 @@ class PostProcessor:
                     with zipfile.ZipFile(file_path, 'r') as zf:
                         zf.extractall(zip_out_dir)
                     logger.info(f"Extracted ZIP contents to {zip_out_dir}")
-                except Exception as e:
+                except (zipfile.BadZipFile, OSError, RuntimeError) as e:
                     logger.error(f"Recovered ZIP extraction failed: {e}")
         return ext, filename

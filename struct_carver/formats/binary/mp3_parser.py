@@ -1,15 +1,14 @@
-"""MP3 format parser for Struct Carver!
+"""MP3 format parser.
 
 This module implements the parser for MP3 binary format.
 """
 import struct
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class MP3Parser(BaseFormatParser):
+class MP3Parser(BaseBinaryParser):
     """Parser for MP3 format files."""
-    engine_type = "binary"
 
     def __init__(self):
         """Initializes the parser state."""
@@ -85,17 +84,6 @@ class MP3Parser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def _parse_frame_size(self, header: bytes) -> int:
         """Parses the MP3 frame header (4 bytes) and returns the frame size in bytes, or -1 if invalid."""

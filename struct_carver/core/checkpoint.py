@@ -1,4 +1,4 @@
-"""Session checkpoint manager for Struct Carver!
+"""Session checkpoint manager.
 
 This module provides the CheckpointManager class, allowing carving operations
 to periodically persist scan offsets and recovered files, enabling graceful
@@ -42,7 +42,7 @@ class CheckpointManager:
                     data.setdefault("workers", {})
                     data.setdefault("files", [])
                     return data
-        except Exception:
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
         return {"workers": {}, "files": []}
 
@@ -83,7 +83,7 @@ class CheckpointManager:
                 json.dump(data, f, indent=2)
             # atomic replace on Windows/POSIX
             os.replace(tmp_path, self.checkpoint_path)
-        except Exception:
+        except (OSError, ValueError):
             if os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)

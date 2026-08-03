@@ -1,4 +1,4 @@
-"""Unit tests for XMLParser in Struct Carver!
+"""Unit tests for XMLParser.
 
 Verifies tag extraction, CDATA and comment filtering, self-closing tag handling,
 and cross-chunk CDATA parsing state.

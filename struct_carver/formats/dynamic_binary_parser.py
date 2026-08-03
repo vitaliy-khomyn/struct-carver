@@ -1,4 +1,4 @@
-"""Dynamic binary format parser for Struct Carver!
+"""Dynamic binary format parser.
 
 This module provides the DynamicBinaryParser class, which allows defining linear
 binary file formats dynamically using specified header and footer signatures.
@@ -15,8 +15,6 @@ class DynamicBinaryParser(BaseBinaryParser):
         ext (str): The file extension for this format.
         is_open (bool): True if the parser has detected a valid header.
     """
-
-    engine_type = "binary"
 
     def __init__(self, ext: str, header: bytes, footer: bytes):
         """Initializes the dynamic parser with extension and signature boundaries.
@@ -62,17 +60,6 @@ class DynamicBinaryParser(BaseBinaryParser):
             List[bytes]: Footer signature list.
         """
         return [self._footer]
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub implementation for tag extraction (not used by binary formats).
-
-        Args:
-            data (bytes): Data chunk.
-
-        Returns:
-            Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Scans binary data for header/footer signatures to verify boundaries.

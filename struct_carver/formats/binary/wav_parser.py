@@ -1,4 +1,4 @@
-"""WAV format parser for Struct Carver!
+"""WAV format parser.
 
 This module implements the parser for WAV binary format.
 """

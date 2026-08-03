@@ -1,4 +1,4 @@
-"""Comprehensive unit tests for forensic enhancements and bug fixes in Struct Carver!
+"""Comprehensive unit tests for forensic enhancements and bug fixes.
 
 Verifies:
 - Memory-safe streaming range hashing (hash_file_range).

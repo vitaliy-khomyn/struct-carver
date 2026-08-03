@@ -1,4 +1,4 @@
-"""Unit tests for newly added forensic features in Struct Carver!
+"""Unit tests for newly added forensic features.
 
 This test suite verifies:
 1. CryptoHasher (SHA-256, MD5, SHA-1, SHA-512, manifest text, and manifest CSV).

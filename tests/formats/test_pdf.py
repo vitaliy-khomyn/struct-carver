@@ -1,4 +1,4 @@
-"""Unit tests for the PDF component."""
+"""Unit tests for the PDF format parser."""
 import unittest
 from struct_carver.formats.binary.pdf_parser import PDFParser
 

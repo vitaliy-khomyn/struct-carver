@@ -1,4 +1,4 @@
-"""WMV format parser for Struct Carver!
+"""WMV format parser.
 
 This module implements the parser for WMV binary format.
 """

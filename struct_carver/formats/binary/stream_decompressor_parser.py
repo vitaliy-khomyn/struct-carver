@@ -1,4 +1,4 @@
-"""Base streaming decompression parser for Struct Carver!
+"""Base streaming decompression parser.
 
 This module provides the BaseStreamingDecompressorParser class, which unifies
 decompression accumulation, EOF detection, and chunk advancement for formats

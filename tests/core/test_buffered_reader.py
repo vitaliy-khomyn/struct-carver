@@ -1,4 +1,4 @@
-"""Unit tests for BufferedClusterReader in Struct Carver!
+"""Unit tests for BufferedClusterReader.
 
 Verifies chunk buffering, streaming reads across buffer boundaries, lookbehind rewinds,
 seeking, and EOF edge conditions.

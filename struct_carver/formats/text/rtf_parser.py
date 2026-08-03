@@ -1,4 +1,4 @@
-"""RTF format parser for Struct Carver!
+"""RTF format parser.
 
 This module provides the RTFParser class, which parses Rich Text Format (RTF)
 streams by checking opening and closing brace structures while handling escaped characters.

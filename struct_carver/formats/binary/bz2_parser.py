@@ -1,4 +1,4 @@
-"""BZ2 format parser for Struct Carver!
+"""BZ2 format parser.
 
 This module implements the parser for BZ2 binary format.
 """

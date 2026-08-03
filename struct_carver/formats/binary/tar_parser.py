@@ -1,14 +1,13 @@
-"""TAR format parser for Struct Carver!
+"""TAR format parser.
 
 This module implements the parser for TAR binary format.
 """
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class TARParser(BaseFormatParser):
+class TARParser(BaseBinaryParser):
     """Parser for TAR format files."""
-    engine_type = "binary"
     ext = "tar"
 
     def __init__(self):
@@ -78,17 +77,6 @@ class TARParser(BaseFormatParser):
                 List[bytes]: Footer signatures.
         """
         return []
-
-    def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Stub for tag extraction.
-
-            Args:
-                data (bytes): Input data block.
-
-            Returns:
-                Tuple[List[Tuple[str, bool]], int]: Empty tags list and zero offset.
-        """
-        return [], 0
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.
