@@ -8,7 +8,7 @@ import os
 import json
 from typing import List, Dict, Tuple, Optional, Any
 from tqdm import tqdm
-from struct_carver.core.buffered_reader import BufferedClusterReader
+from struct_carver.core.buffered_reader import BufferedClusterReader, get_image_size, discover_segments
 from struct_carver.core.header_detector import HeaderDetector
 from struct_carver.core.gap_jumper import GapJumper
 from struct_carver.core.post_processor import PostProcessor
@@ -20,8 +20,8 @@ from struct_carver.core.metadata import MetadataExtractor
 from struct_carver.formats.registry import ParserRegistry
 from struct_carver.logger import setup_logger
 
-# re-export BufferedClusterReader for backwards compatibility
-__all__ = ['Carver', 'BufferedClusterReader']
+# re-export BufferedClusterReader and segment utilities for backwards compatibility
+__all__ = ['Carver', 'BufferedClusterReader', 'get_image_size', 'discover_segments']
 
 
 class Carver:
@@ -42,6 +42,9 @@ class Carver:
         hasher: Optional[Any] = None,
         validator: Optional[Any] = None,
         checkpoint_mgr: Optional[Any] = None,
+        max_file_size: int = 2 * 1024 * 1024 * 1024,
+        extract_archives: bool = False,
+        quiet: bool = False,
     ):
         """Initializes the carver orchestrator and underlying components.
 
@@ -55,11 +58,16 @@ class Carver:
             hasher (Optional[Any], optional): CryptoHasher instance or algorithm name (default: None).
             validator (Optional[Any], optional): FileValidator instance or bool (default: None).
             checkpoint_mgr (Optional[Any], optional): CheckpointManager instance for resuming (default: None).
+            max_file_size (int, optional): Maximum carved file size before truncation (default: 2GB).
+            extract_archives (bool, optional): Whether to extract carved archives safely (default: False).
+            quiet (bool, optional): Suppress progress indicators and non-essential logs (default: False).
         """
         self.cluster_size = cluster_size
         self.max_search_clusters = max_search_clusters
         self.text_density_threshold = text_density_threshold
         self.max_gap_fill_bytes = max_gap_fill_bytes
+        self.max_file_size = max_file_size
+        self.quiet = quiet
 
         if isinstance(hasher, str):
             self.hasher: Optional[CryptoHasher] = CryptoHasher(hasher)
@@ -82,7 +90,7 @@ class Carver:
             max_search_clusters=max_search_clusters,
             text_density_threshold=text_density_threshold
         )
-        self.post_processor = PostProcessor()
+        self.post_processor = PostProcessor(extract_archives=extract_archives)
 
     @property
     def parsers(self) -> List[Any]:
@@ -186,6 +194,7 @@ class Carver:
             "status": status,
             "fragments": fragments,
             "total_size": total_size,
+            "size": total_size,
             "start_lba": start_lba,
             "slack_bytes": slack_bytes,
         }
@@ -426,7 +435,7 @@ class Carver:
         logger.info(f"Starting carving process for worker {worker_id} from offset {start_offset} to {end_offset or 'EOF'}")
 
         try:
-            total_size = os.path.getsize(image_path)
+            total_size = get_image_size(image_path)
             end_boundary = end_offset if end_offset else total_size
 
             file_id = 0
@@ -447,6 +456,7 @@ class Carver:
 
                 carving = False
                 current_file_handle = None
+                current_file_bytes = 0
                 engine = None
                 active_parser = None
                 carve_text_overlap = b""
@@ -460,7 +470,7 @@ class Carver:
                     prev_overlap = f.read(overlap_size)
                     f.seek(start_offset)
 
-                pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id)
+                pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id, disable=self.quiet)
                 cluster_count = 0
                 try:
                     while True:
@@ -499,6 +509,7 @@ class Carver:
                                 current_fragments = [{"start_offset": adj_start, "end_offset": phys_end, "size": phys_end - adj_start}]
                                 current_ext = getattr(active_parser, 'ext', self.registry.get_extension(active_parser))
                                 current_filename = f"carved_w{worker_id}_{file_id}.{current_ext}"
+                                current_file_bytes = len(cluster)
                                 just_started = True
                             else:
                                 prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
@@ -545,7 +556,10 @@ class Carver:
                                     if parser_is_binary:
                                         if current_file_handle:
                                             current_file_handle.write(cluster)
-                                        self._write_gap_fill(current_file_handle, cand_start - phys_end, logger)
+                                            current_file_bytes += len(cluster)
+                                        gap_bytes = cand_start - phys_end
+                                        self._write_gap_fill(current_file_handle, gap_bytes, logger)
+                                        current_file_bytes += max(0, gap_bytes)
                                     current_fragments.append({"start_offset": cand_start, "end_offset": cand_end, "size": cand_end - cand_start})
                                 else:
                                     carving = False
@@ -592,6 +606,30 @@ class Carver:
                                 current_file_handle = None
                             else:
                                 current_file_handle.write(cluster_to_write)
+                                current_file_bytes += len(cluster_to_write)
+                                if current_file_bytes >= self.max_file_size:
+                                    logger.warning(
+                                        f"Carved file {current_filename} reached max_file_size limit "
+                                        f"({self.max_file_size} bytes). Truncating as partial."
+                                    )
+                                    record = self._finalize_partial_file(
+                                        image_path=image_path,
+                                        output_dir=output_dir,
+                                        current_filename=current_filename,
+                                        current_file_handle=current_file_handle,
+                                        file_id=file_id,
+                                        current_ext=current_ext,
+                                        fragments=current_fragments,
+                                        worker_id=worker_id,
+                                        current_offset=f.tell(),
+                                        status="partial",
+                                    )
+                                    current_file_handle = None
+                                    report["files"].append(record)
+                                    file_id += 1
+                                    carving = False
+                                    active_parser = None
+                                    prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
                 except Exception as e:
                     logger.error(f"Worker {worker_id} crashed during carving: {e}", exc_info=True)
                     report["error"] = str(e)

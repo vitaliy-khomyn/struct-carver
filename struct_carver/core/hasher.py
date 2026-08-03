@@ -5,6 +5,8 @@ This module provides the CryptoHasher class for generating forensic hashes
 """
 
 import os
+import json
+import datetime
 import hashlib
 from typing import Optional, List, Dict, Any
 
@@ -56,13 +58,17 @@ class CryptoHasher:
         if not os.path.exists(file_path):
             return ""
 
+        from struct_carver.core.buffered_reader import discover_segments
+        segments = discover_segments(file_path)
         hasher = self._get_hasher()
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                hasher.update(chunk)
+        target_paths = segments if len(segments) > 1 else [file_path]
+        for path in target_paths:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
         return hasher.hexdigest()
 
     def hash_bytes(self, data: bytes) -> str:
@@ -93,9 +99,12 @@ class CryptoHasher:
         if not os.path.exists(file_path) or size <= 0:
             return ""
 
+        from struct_carver.core.buffered_reader import discover_segments, SegmentedStream
+        segments = discover_segments(file_path)
         hasher = self._get_hasher()
+        stream = SegmentedStream(segments) if len(segments) > 1 else open(file_path, "rb")
         bytes_left = size
-        with open(file_path, "rb") as f:
+        with stream as f:
             f.seek(start_offset)
             while bytes_left > 0:
                 to_read = min(bytes_left, chunk_size)
@@ -155,3 +164,86 @@ class CryptoHasher:
             rows.append(row)
 
         return header + "\n".join(rows) + ("\n" if rows else "")
+
+    @staticmethod
+    def _parse_timestamp_to_epoch(ts_str: Any) -> int:
+        """Converts an extracted metadata timestamp string to integer UNIX epoch seconds.
+
+        Args:
+            ts_str (Any): Raw timestamp string.
+
+        Returns:
+            int: UNIX epoch timestamp in seconds, or 0 if unparseable.
+        """
+        if not ts_str or not isinstance(ts_str, str):
+            return 0
+        s = ts_str.strip()
+        # handle PDF format: D:20230101120000
+        if s.startswith("D:") and len(s) >= 16:
+            try:
+                dt = datetime.datetime.strptime(s[2:16], "%Y%m%d%H%M%S")
+                return int(dt.timestamp())
+            except (ValueError, OSError):
+                pass
+        # common ISO, EXIF, and standard patterns
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y:%m:%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+        ):
+            try:
+                dt = datetime.datetime.strptime(s, fmt)
+                return int(dt.timestamp())
+            except (ValueError, OSError):
+                continue
+        return 0
+
+    def generate_bodyfile_content(self, files: List[Dict[str, Any]]) -> str:
+        """Generates SleuthKit Bodyfile 3.0 content for timeline analysis with mactime.
+
+        Format:
+        MD5|name|inode|mode_as_string|UID|GID|size|atime|mtime|ctime|crtime
+
+        Args:
+            files (List[Dict[str, Any]]): List of recovered file records.
+
+        Returns:
+            str: Bodyfile 3.0 lines.
+        """
+        lines = []
+        for f in files:
+            filename = f.get("filename", "unnamed")
+            md5 = f.get("md5") or (f.get("file_hash", "0") if f.get("hash_algo") == "md5" else "0")
+            first_offset = f["fragments"][0]["start_offset"] if f.get("fragments") else 0
+            inode = f.get("start_lba", first_offset // 512)
+            mode = "-rwxr-xr-x"
+            uid = "0"
+            gid = "0"
+            size = str(f.get("total_size", f.get("size", 0)))
+
+            meta = f.get("metadata", {}) or {}
+            crtime = self._parse_timestamp_to_epoch(
+                meta.get("created") or meta.get("creation time") or meta.get("creation_date")
+            )
+            mtime = self._parse_timestamp_to_epoch(
+                meta.get("modified") or meta.get("moddate") or meta.get("timestamp") or meta.get("modification_date")
+            )
+            atime = mtime
+            ctime = mtime
+
+            line = f"{md5}|{filename}|{inode}|{mode}|{uid}|{gid}|{size}|{atime}|{mtime}|{ctime}|{crtime}"
+            lines.append(line)
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def generate_jsonl_content(self, files: List[Dict[str, Any]]) -> str:
+        """Generates JSON-Lines (JSONL) formatted output for SIEM ingestion.
+
+        Args:
+            files (List[Dict[str, Any]]): List of recovered file records.
+
+        Returns:
+            str: Line-delimited JSON string.
+        """
+        return "\n".join(json.dumps(f) for f in files) + ("\n" if files else "")

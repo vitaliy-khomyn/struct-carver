@@ -75,6 +75,44 @@ AVAILABLE_PARSERS: Dict[str, Type[BaseFormatParser]] = {
     'tif': TIFFParser,
 }
 
+CATEGORY_PRESETS: Dict[str, List[str]] = {
+    'images': ['jpg', 'png', 'gif', 'bmp', 'tiff', 'pcx'],
+    'documents': ['pdf', 'rtf', 'docx', 'xlsx', 'pptx', 'html', 'xml'],
+    'media': ['mp4', 'mov', 'avi', 'wmv', 'mpg', 'flv', 'mp3', 'wav', 'au', 'wma'],
+    'archives': ['zip', '7z', 'rar', 'gz', 'bz2', 'tar', 'wim'],
+    'databases': ['sqlite', 'sqlitewal'],
+}
+
+
+def expand_format_categories(formats: Optional[List[str]]) -> List[str]:
+    """Expands category alias names into concrete format extensions.
+
+    Args:
+        formats (Optional[List[str]]): Raw format list or category names.
+
+    Returns:
+        List[str]: Flattened and deduplicated list of format extensions.
+    """
+    if not formats:
+        return list(AVAILABLE_PARSERS.keys())
+
+    expanded: List[str] = []
+    for fmt in formats:
+        fmt_lower = fmt.strip().lower()
+        if fmt_lower in CATEGORY_PRESETS:
+            expanded.extend(CATEGORY_PRESETS[fmt_lower])
+        else:
+            expanded.append(fmt_lower)
+
+    # deduplicate while preserving insertion order
+    seen = set()
+    result = []
+    for item in expanded:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
 
 class ParserRegistry:
     """Registry managing available format parsers and instances for carving sessions.
@@ -93,11 +131,20 @@ class ParserRegistry:
         """
         return list(AVAILABLE_PARSERS.keys())
 
+    @classmethod
+    def get_supported_categories(cls) -> Dict[str, List[str]]:
+        """Returns the dictionary of format category presets.
+
+        Returns:
+            Dict[str, List[str]]: Mapping of category names to extension lists.
+        """
+        return dict(CATEGORY_PRESETS)
+
     def __init__(self, formats: Optional[List[str]] = None, custom_parsers: Optional[List[Any]] = None):
         """Initializes the parser registry.
 
         Args:
-            formats (List[str], optional): List of format extensions to enable.
+            formats (List[str], optional): List of format extensions or category aliases to enable.
             custom_parsers (List[Any], optional): List of custom parser instances.
         """
         self.parsers: List[BaseFormatParser] = []
@@ -105,10 +152,9 @@ class ParserRegistry:
         self.ext_map[ZIPParser] = "zip"
         self.ext_map[TIFFParser] = "tiff"
 
-        if formats is None:
-            formats = list(AVAILABLE_PARSERS.keys())
+        expanded_formats = expand_format_categories(formats)
 
-        for fmt in formats:
+        for fmt in expanded_formats:
             parser_class = AVAILABLE_PARSERS.get(fmt.lower())
             if parser_class:
                 self.parsers.append(parser_class())

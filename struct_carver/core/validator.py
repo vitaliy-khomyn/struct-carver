@@ -15,7 +15,7 @@ import struct
 import zipfile
 import sqlite3
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 
 class FileValidator:
@@ -81,6 +81,9 @@ class FileValidator:
             "gz": self._validate_gz,
             "bz2": self._validate_bz2,
             "wav": self._validate_wav,
+            "avi": self._validate_avi,
+            "mp4": self._validate_mp4,
+            "mov": self._validate_mp4,
         }
 
         try:
@@ -282,19 +285,130 @@ class FileValidator:
         except Exception as err:
             return {"is_valid": False, "details": f"BZIP2 decompression error: {err}"}
 
-    def _validate_wav(self, file_path: str) -> Dict[str, Any]:
-        """Validates RIFF WAV container and chunk structures."""
+    def _validate_riff(self, file_path: str, expected_type: bytes, required_chunks: List[bytes]) -> Dict[str, Any]:
+        """Validates RIFF container (WAV, AVI) and its constituent sub-chunks.
+
+        Args:
+            file_path (str): Path to the audio or video file.
+            expected_type (bytes): Expected RIFF form type (e.g. b"WAVE" or b"AVI ").
+            required_chunks (List[bytes]): List of chunk IDs that must be present.
+
+        Returns:
+            Dict[str, Any]: Validation result.
+        """
         try:
             file_size = os.path.getsize(file_path)
-            if file_size < 44:
-                return {"is_valid": False, "details": "WAV file too small (< 44 bytes)"}
+            if file_size < 12:
+                return {"is_valid": False, "details": f"RIFF file too small ({file_size} bytes)"}
+
             with open(file_path, "rb") as f:
                 header = f.read(12)
-                if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
-                    return {"is_valid": False, "details": "Invalid RIFF WAVE container signature"}
-                riff_size = struct.unpack("<I", header[4:8])[0]
-                if file_size < riff_size + 8:
-                    return {"is_valid": False, "details": f"Truncated WAV (file size {file_size} < expected {riff_size + 8})"}
-                return {"is_valid": True, "details": f"RIFF WAV container header verified (size: {riff_size + 8} bytes)"}
+                if header[:4] != b"RIFF" or header[8:12] != expected_type:
+                    return {"is_valid": False, "details": f"Invalid RIFF {expected_type.decode('latin1', errors='replace')} container signature"}
+
+                riff_payload_size = struct.unpack("<I", header[4:8])[0]
+                if file_size < riff_payload_size + 8:
+                    return {"is_valid": False, "details": f"Truncated RIFF (file size {file_size} < expected {riff_payload_size + 8})"}
+
+                # scan sub-chunks
+                found_chunks = set()
+                curr_offset = 12
+                chunks_scanned = 0
+                max_chunks = 1000
+
+                while curr_offset + 8 <= file_size and chunks_scanned < max_chunks:
+                    f.seek(curr_offset)
+                    chunk_hdr = f.read(8)
+                    if len(chunk_hdr) < 8:
+                        break
+                    chunk_id = chunk_hdr[:4]
+                    chunk_size = struct.unpack("<I", chunk_hdr[4:8])[0]
+                    found_chunks.add(chunk_id)
+
+                    # for LIST chunks, read list type identifier
+                    if chunk_id == b"LIST" and chunk_size >= 4:
+                        list_type = f.read(4)
+                        found_chunks.add(list_type)
+
+                    padded_size = (chunk_size + 1) & ~1
+                    curr_offset += 8 + padded_size
+                    chunks_scanned += 1
+
+                for req in required_chunks:
+                    if req not in found_chunks:
+                        return {"is_valid": False, "details": f"Missing required RIFF sub-chunk: {req.decode('latin1', errors='replace')}"}
+
+                names = [c.decode('latin1', errors='replace').strip() for c in found_chunks]
+                return {"is_valid": True, "details": f"RIFF {expected_type.decode('latin1', errors='replace')} valid (chunks: {', '.join(names)})"}
         except Exception as err:
-            return {"is_valid": False, "details": f"WAV check error: {err}"}
+            return {"is_valid": False, "details": f"RIFF validation error: {err}"}
+
+    def _validate_wav(self, file_path: str) -> Dict[str, Any]:
+        """Validates RIFF WAV container and fmt/data sub-chunks."""
+        return self._validate_riff(file_path, b"WAVE", [b"fmt ", b"data"])
+
+    def _validate_avi(self, file_path: str) -> Dict[str, Any]:
+        """Validates RIFF AVI container and hdrl/movi sub-chunks."""
+        return self._validate_riff(file_path, b"AVI ", [b"hdrl"])
+
+    def _validate_mp4(self, file_path: str) -> Dict[str, Any]:
+        """Validates MP4/MOV ISO base media container and atom box hierarchy."""
+        try:
+            file_size = os.path.getsize(file_path)
+            if file_size < 16:
+                return {"is_valid": False, "details": f"MP4/MOV file too small ({file_size} bytes)"}
+
+            with open(file_path, "rb") as f:
+                offset = 0
+                found_boxes = []
+                box_count = 0
+                max_boxes = 500
+
+                while offset + 8 <= file_size and box_count < max_boxes:
+                    f.seek(offset)
+                    hdr = f.read(8)
+                    if len(hdr) < 8:
+                        break
+                    box_len = struct.unpack(">I", hdr[:4])[0]
+                    box_type = hdr[4:8]
+
+                    # validate ascii characters in box type
+                    if not all(32 <= b <= 126 for b in box_type):
+                        return {"is_valid": False, "details": f"Invalid atom type at offset {offset}"}
+
+                    found_boxes.append(box_type.decode('latin1', errors='replace'))
+
+                    if box_len == 1:
+                        # 64-bit extended size
+                        ext_hdr = f.read(8)
+                        if len(ext_hdr) < 8:
+                            return {"is_valid": False, "details": f"Truncated 64-bit box {box_type} at offset {offset}"}
+                        box_len = struct.unpack(">Q", ext_hdr)[0]
+                        if box_len < 16:
+                            return {"is_valid": False, "details": f"Invalid 64-bit box length {box_len}"}
+                        offset += box_len
+                    elif box_len == 0:
+                        # extends to end of file
+                        offset = file_size
+                    elif box_len < 8:
+                        return {"is_valid": False, "details": f"Invalid atom length {box_len} for {box_type} at offset {offset}"}
+                    else:
+                        offset += box_len
+
+                    box_count += 1
+
+                if not found_boxes:
+                    return {"is_valid": False, "details": "No valid atoms found in file"}
+
+                first_box = found_boxes[0]
+                valid_first = {"ftyp", "moov", "mdat", "wide", "free", "skip"}
+                if first_box not in valid_first:
+                    return {"is_valid": False, "details": f"Unrecognized initial atom '{first_box}'"}
+
+                has_media = any(b in found_boxes for b in ("moov", "mdat"))
+                if not has_media:
+                    return {"is_valid": False, "details": f"Incomplete MP4/MOV container: missing moov or mdat atoms (found: {', '.join(found_boxes)})"}
+
+                return {"is_valid": True, "details": f"MP4/MOV container structure verified (atoms: {', '.join(found_boxes)})"}
+        except Exception as err:
+            return {"is_valid": False, "details": f"MP4 validation error: {err}"}

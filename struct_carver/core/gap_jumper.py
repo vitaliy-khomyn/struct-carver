@@ -105,64 +105,81 @@ class GapJumper:
         original_pos = f.tell()
         is_binary = getattr(parser_snapshot, 'engine_type', 'semantic') == 'binary'
 
+        batch_clusters = 32
         while search_count < max_search_clusters:
-            cand_start = f.tell()
-            candidate_cluster = f.read(self.cluster_size)
-            cand_end = f.tell()
-            if not candidate_cluster:
-                logger.info(f"Gap-jumping reached EOF at offset {cand_start} after checking {search_count} clusters.")
+            remaining_to_search = max_search_clusters - search_count
+            clusters_to_read = min(batch_clusters, remaining_to_search)
+            batch_start_pos = f.tell()
+            batch_data = f.read(clusters_to_read * self.cluster_size)
+            if not batch_data:
+                logger.info(f"Gap-jumping reached EOF at offset {batch_start_pos} after checking {search_count} clusters.")
                 break
 
-            # cache key can now be used for both binary and text parsers
-            cache_key = (cand_start, type(parser_snapshot), parser_snapshot.state_tuple(), current_text_overlap)
+            num_clusters_in_batch = (len(batch_data) + self.cluster_size - 1) // self.cluster_size
+            match_found = False
 
-            if cache_key in self.cluster_cache:
-                candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, cached_parser, engine_state = self.cluster_cache[cache_key]
-                test_engine = snapshot.clone()
-                test_parser = cached_parser.clone()
-                if is_binary:
-                    test_engine.process_binary(*engine_state)
+            for batch_idx in range(num_clusters_in_batch):
+                cand_start = batch_start_pos + batch_idx * self.cluster_size
+                candidate_cluster = batch_data[batch_idx * self.cluster_size : (batch_idx + 1) * self.cluster_size]
+                cand_end = cand_start + len(candidate_cluster)
+
+                # cache key can now be used for both binary and text parsers
+                cache_key = (cand_start, type(parser_snapshot), parser_snapshot.state_tuple(), current_text_overlap)
+
+                if cache_key in self.cluster_cache:
+                    candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, cached_parser, engine_state = self.cluster_cache[cache_key]
+                    test_engine = snapshot.clone()
+                    test_parser = cached_parser.clone()
+                    if is_binary:
+                        test_engine.process_binary(*engine_state)
+                    else:
+                        test_engine.process_tags(candidate_tags)
                 else:
-                    test_engine.process_tags(candidate_tags)
-            else:
-                is_text_heavy = False
-                if not is_binary:
-                    # performance optimization: lazy check for text parsers to avoid regex matching
-                    is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
-                    has_interesting_chars = parser_snapshot.has_continuation_markers(candidate_cluster)
-                    
-                    if not is_text_heavy and not has_interesting_chars:
+                    is_text_heavy = False
+                    if not is_binary:
+                        # performance optimization: lazy check for text parsers to avoid regex matching
+                        is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
+                        has_interesting_chars = parser_snapshot.has_continuation_markers(candidate_cluster)
+
+                        if not is_text_heavy and not has_interesting_chars:
+                            search_count += 1
+                            if search_count >= max_search_clusters:
+                                break
+                            continue
+
+                    test_engine = snapshot.clone()
+                    test_parser = parser_snapshot.clone()
+                    test_parser.prepare_for_gap_jump()
+
+                    if is_binary:
+                        # reset remaining bytes expectation so candidate is evaluated from a clean boundary
+                        test_engine.bytes_remaining = 0
+                        # start with a clean corruption flag so process_binary reflects candidate result
+                        test_engine.is_corrupted = False
+
+                    candidate_tags, new_overlap, bytes_to_advance = self.process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
+
+                    if len(self.cluster_cache) > 100000:
+                        self.cluster_cache.clear()
+
+                    engine_state = (test_engine.is_corrupted, test_engine.is_complete, test_engine.bytes_remaining) if is_binary else None
+                    self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone(), engine_state)
+
+                if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy or is_binary):
+                    # allow parsers to enforce stronger content checks on candidate clusters via optional verify method
+                    verify_fn = getattr(test_parser, 'gap_jump_verify', None)
+                    if verify_fn is not None and not verify_fn(candidate_cluster):
                         search_count += 1
+                        if search_count >= max_search_clusters:
+                            break
                         continue
+                    logger.info(f"Found valid continuation for file {file_id} after {search_count + 1} clusters at offset {cand_start}!")
+                    f.seek(cand_end)
+                    return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end
 
-                test_engine = snapshot.clone()
-                test_parser = parser_snapshot.clone()
-                test_parser.prepare_for_gap_jump()
-
-                if is_binary:
-                    # reset remaining bytes expectation so candidate is evaluated from a clean boundary
-                    test_engine.bytes_remaining = 0
-                    # start with a clean corruption flag so process_binary reflects candidate result
-                    test_engine.is_corrupted = False
-
-                candidate_tags, new_overlap, bytes_to_advance = self.process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)
-
-                if len(self.cluster_cache) > 100000:
-                    self.cluster_cache.clear()
-                
-                engine_state = (test_engine.is_corrupted, test_engine.is_complete, test_engine.bytes_remaining) if is_binary else None
-                self.cluster_cache[cache_key] = (candidate_tags, new_overlap, bytes_to_advance, is_text_heavy, test_parser.clone(), engine_state)
-
-            if not test_engine.is_corrupted and (len(candidate_tags) > 0 or is_text_heavy or is_binary):
-                # allow parsers to enforce stronger content checks on candidate clusters via optional verify method
-                verify_fn = getattr(test_parser, 'gap_jump_verify', None)
-                if verify_fn is not None and not verify_fn(candidate_cluster):
-                    search_count += 1
-                    continue
-                logger.info(f"Found valid continuation for file {file_id} after {search_count + 1} clusters at offset {cand_start}!")
-                return True, test_engine, test_parser, candidate_tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end
-
-            search_count += 1
+                search_count += 1
+                if search_count >= max_search_clusters:
+                    break
 
         # search failed
         logger.error(f"Search failed for file {file_id} ({parser_name}) after checking {search_count} clusters. Aborting recovery.")

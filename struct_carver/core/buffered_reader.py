@@ -4,6 +4,177 @@ This module provides the BufferedClusterReader class, which pulls large chunks
 of raw disk image data into memory buffers to reduce I/O system calls during scanning.
 """
 
+import os
+import re
+from typing import List, Tuple, Optional, Any
+
+
+def discover_segments(file_path: str) -> List[str]:
+    """Discovers all chronological part files for a segmented raw disk image.
+
+    Detects common forensic split naming schemes such as:
+    - image.001, image.002, image.003
+    - image.raw.01, image.raw.02
+    - image.dd.001, image.dd.002
+    - image.part01.raw, image.part02.raw
+
+    Args:
+        file_path (str): Initial image path provided by user.
+
+    Returns:
+        List[str]: List of existing contiguous segment file paths in order.
+    """
+    if not os.path.exists(file_path):
+        return []
+
+    dir_name = os.path.dirname(file_path) or "."
+    base_name = os.path.basename(file_path)
+
+    # pattern A: extension is digits, e.g. .001, .002
+    match_ext = re.match(r'^(.*)\.(\d+)$', base_name)
+    if match_ext:
+        stem, num_str = match_ext.groups()
+        width = len(num_str)
+        start_num = int(num_str)
+        if start_num in (0, 1):
+            segments = []
+            curr = start_num
+            while True:
+                cand_name = f"{stem}.{curr:0{width}d}"
+                cand_path = os.path.join(dir_name, cand_name)
+                if os.path.exists(cand_path):
+                    segments.append(cand_path)
+                    curr += 1
+                else:
+                    break
+            if len(segments) > 1:
+                return segments
+
+    # pattern B: digits before extension, e.g. .part01.raw or .raw.01
+    match_mid = re.match(r'^(.*?)(\d+)(\.[^.]+)$', base_name)
+    if match_mid:
+        prefix, num_str, ext = match_mid.groups()
+        width = len(num_str)
+        start_num = int(num_str)
+        if start_num in (0, 1):
+            segments = []
+            curr = start_num
+            while True:
+                cand_name = f"{prefix}{curr:0{width}d}{ext}"
+                cand_path = os.path.join(dir_name, cand_name)
+                if os.path.exists(cand_path):
+                    segments.append(cand_path)
+                    curr += 1
+                else:
+                    break
+            if len(segments) > 1:
+                return segments
+
+    return [file_path]
+
+
+def get_image_size(file_path: str) -> int:
+    """Calculates total byte size across all segments of an evidence image.
+
+    Args:
+        file_path (str): Path to image file or first segment.
+
+    Returns:
+        int: Total size in bytes.
+    """
+    segments = discover_segments(file_path)
+    if not segments:
+        return os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    return sum(os.path.getsize(s) for s in segments)
+
+
+class SegmentedStream:
+    """A virtual seekable stream presenting multiple segmented image chunks as one contiguous file."""
+
+    def __init__(self, segment_paths: List[str]):
+        """Initializes the virtual stream with discovered image segments.
+
+        Args:
+            segment_paths (List[str]): List of segment file paths in order.
+        """
+        self.segment_paths = segment_paths
+        self.segment_sizes = [os.path.getsize(p) for p in segment_paths]
+        self.total_size = sum(self.segment_sizes)
+        self.current_pos = 0
+        self._current_handle = None
+        self._current_seg_idx = -1
+
+    def _get_handle_for_offset(self, offset: int) -> Tuple[Optional[Any], int]:
+        """Finds the open file handle and remaining bytes in the segment for a given global offset."""
+        accum = 0
+        for idx, sz in enumerate(self.segment_sizes):
+            if accum <= offset < accum + sz:
+                if self._current_seg_idx != idx:
+                    if self._current_handle:
+                        self._current_handle.close()
+                    self._current_handle = open(self.segment_paths[idx], 'rb')
+                    self._current_seg_idx = idx
+                self._current_handle.seek(offset - accum)
+                return self._current_handle, accum + sz - offset
+            accum += sz
+        return None, 0
+
+    def seek(self, pos: int, whence: int = 0) -> int:
+        """Sets the virtual position in the combined image.
+
+        Args:
+            pos (int): Target offset.
+            whence (int, optional): Reference position (0: SEEK_SET, 1: SEEK_CUR, 2: SEEK_END).
+
+        Returns:
+            int: New virtual stream position.
+        """
+        if whence == 0:
+            self.current_pos = pos
+        elif whence == 1:
+            self.current_pos += pos
+        elif whence == 2:
+            self.current_pos = self.total_size + pos
+        self.current_pos = max(0, self.current_pos)
+        return self.current_pos
+
+    def tell(self) -> int:
+        """Returns the current virtual position in the combined image."""
+        return self.current_pos
+
+    def read(self, size: int) -> bytes:
+        """Reads bytes across segment boundaries transparently."""
+        if self.current_pos >= self.total_size or size <= 0:
+            return b""
+        result = bytearray()
+        needed = size
+        while needed > 0 and self.current_pos < self.total_size:
+            handle, remaining_in_seg = self._get_handle_for_offset(self.current_pos)
+            if not handle or remaining_in_seg <= 0:
+                break
+            to_read = min(needed, remaining_in_seg)
+            chunk = handle.read(to_read)
+            if not chunk:
+                break
+            result.extend(chunk)
+            self.current_pos += len(chunk)
+            needed -= len(chunk)
+        return bytes(result)
+
+    def close(self):
+        """Closes any open segment file handle."""
+        if self._current_handle:
+            self._current_handle.close()
+            self._current_handle = None
+            self._current_seg_idx = -1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
 class BufferedClusterReader:
     """A custom buffered disk reader for large raw forensic images.
 
@@ -16,11 +187,15 @@ class BufferedClusterReader:
         """Initializes the buffered cluster reader.
 
         Args:
-            file_path (str): Path to the image file to read.
+            file_path (str): Path to the image file or first segment to read.
             buffer_size (int, optional): Buffer cache size in bytes (default: 16MB).
             lookbehind (int, optional): Buffer rewind lookbehind size in bytes (default: 4MB).
         """
-        self.file = open(file_path, 'rb')
+        segments = discover_segments(file_path)
+        if len(segments) > 1:
+            self.file = SegmentedStream(segments)
+        else:
+            self.file = open(file_path, 'rb')
         self.buffer_size = buffer_size
         self.buffer = memoryview(b"")
         self.buffer_start_pos = 0

@@ -9,14 +9,16 @@ import os
 import sys
 import glob
 import json
+import logging
 import argparse
 import concurrent.futures
 from struct_carver.core.carver import Carver
+from struct_carver.core.buffered_reader import get_image_size
 from struct_carver.core.hasher import CryptoHasher, SUPPORTED_HASH_ALGOS
 from struct_carver.core.validator import FileValidator
 from struct_carver.core.checkpoint import CheckpointManager
 from struct_carver.dashboard import generate_dashboard
-from struct_carver.formats.registry import ParserRegistry
+from struct_carver.formats.registry import ParserRegistry, expand_format_categories
 from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
 from struct_carver.logger import setup_logger
 
@@ -29,7 +31,19 @@ def carve_worker(args):
     Args:
         args (tuple): A tuple containing all parameters for Carver execution.
     """
-    if len(args) == 15:
+    max_file_size = 2 * 1024 * 1024 * 1024
+    extract_archives = False
+    quiet = False
+
+    if len(args) >= 18:
+        (image, output, cluster_size, formats, start, end, worker_id,
+         custom_configs, max_search, density, profile, max_gap_fill,
+         hash_algo, validate, resume, max_file_size, extract_archives, quiet) = args[:18]
+    elif len(args) >= 17:
+        (image, output, cluster_size, formats, start, end, worker_id,
+         custom_configs, max_search, density, profile, max_gap_fill,
+         hash_algo, validate, resume, max_file_size, extract_archives) = args[:17]
+    elif len(args) == 15:
         (image, output, cluster_size, formats, start, end, worker_id,
          custom_configs, max_search, density, profile, max_gap_fill,
          hash_algo, validate, resume) = args
@@ -60,7 +74,10 @@ def carve_worker(args):
         max_gap_fill_bytes=max_gap_fill,
         hasher=hasher,
         validator=validator,
-        checkpoint_mgr=checkpoint_mgr
+        checkpoint_mgr=checkpoint_mgr,
+        max_file_size=max_file_size,
+        extract_archives=extract_archives,
+        quiet=quiet
     )
 
     if profile:
@@ -206,7 +223,7 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
     with open(merged_path, 'w', encoding='utf-8') as f:
         json.dump(merged_report, f, indent=4)
 
-    # generate forensic evidence manifests
+    # generate forensic evidence manifests and timeline exports
     try:
         hasher = CryptoHasher(hash_algo)
         manifest_name = f"manifest.{hash_algo}"
@@ -217,6 +234,14 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
         csv_path = os.path.join(output_dir, "manifest.csv")
         with open(csv_path, "w", encoding="utf-8") as f_csv:
             f_csv.write(hasher.generate_csv_manifest(merged_report["files"]))
+
+        bodyfile_path = os.path.join(output_dir, "bodyfile.txt")
+        with open(bodyfile_path, "w", encoding="utf-8") as f_body:
+            f_body.write(hasher.generate_bodyfile_content(merged_report["files"]))
+
+        jsonl_path = os.path.join(output_dir, "carve_report.jsonl")
+        with open(jsonl_path, "w", encoding="utf-8") as f_jsonl:
+            f_jsonl.write(hasher.generate_jsonl_content(merged_report["files"]))
     except (OSError, ValueError):
         pass
 
@@ -249,6 +274,9 @@ def main():
     parser.add_argument('--resume', action='store_true', help="Resume an interrupted carving session from checkpoint")
     parser.add_argument('-d', '--dashboard', action='store_true', help="Automatically generate an interactive HTML dashboard upon completion.")
     parser.add_argument('--profile', action='store_true', help="Enable cProfile performance profiling per worker.")
+    parser.add_argument('--max-file-size', type=int, default=2 * 1024 * 1024 * 1024, help="Maximum allowed carved file size in bytes before truncation (default: 2GB)")
+    parser.add_argument('--extract-archives', action='store_true', help="Safely unpack carved ZIP/TAR archives into subdirectories")
+    parser.add_argument('-q', '--quiet', action='store_true', help="Suppress non-essential console logs and progress indicators")
 
     args = parser.parse_args()
 
@@ -282,7 +310,8 @@ def main():
 
     # ensure output directory exists before configuring loggers
     os.makedirs(args.output, exist_ok=True)
-    logger = setup_logger("Main", os.path.join(args.output, "audit_main.log"))
+    log_level = logging.WARNING if args.quiet else logging.INFO
+    logger = setup_logger("Main", os.path.join(args.output, "audit_main.log"), level=log_level)
 
     if not os.path.isfile(args.image):
         logger.error(f"Image file '{args.image}' not found.")
@@ -318,8 +347,10 @@ def main():
         SUPPORTED_FORMATS.update([cfg['extension'].lower() for cfg in custom_configs])
 
     raw_formats = [fmt.strip().lower() for fmt in args.formats.split(',')]
-    valid_formats = [fmt for fmt in raw_formats if fmt in SUPPORTED_FORMATS]
-    invalid_formats = [fmt for fmt in raw_formats if fmt not in SUPPORTED_FORMATS]
+    expanded_formats = expand_format_categories(raw_formats)
+    valid_formats = [fmt for fmt in expanded_formats if fmt in SUPPORTED_FORMATS]
+    known_categories = ParserRegistry.get_supported_categories()
+    invalid_formats = [fmt for fmt in raw_formats if fmt not in SUPPORTED_FORMATS and fmt not in known_categories]
 
     if invalid_formats:
         logger.warning(f"Ignoring unsupported formats: {', '.join(invalid_formats)}")
@@ -330,6 +361,7 @@ def main():
 
     # compute cryptographic chain of custody hashes for target forensic image
     logger.info("Computing source image cryptographic integrity verification hashes...")
+    total_size = get_image_size(args.image)
     sha256_hasher = CryptoHasher("sha256")
     md5_hasher = CryptoHasher("md5")
     source_sha256 = sha256_hasher.hash_file(args.image)
@@ -338,7 +370,7 @@ def main():
         "image_path": os.path.abspath(args.image),
         "sha256": source_sha256,
         "md5": source_md5,
-        "file_size": os.path.getsize(args.image)
+        "file_size": total_size
     }
 
     logger.info("========================================")
@@ -362,7 +394,6 @@ def main():
         logger.info("Profiling:    Enabled (Output to .prof files)")
     logger.info("========================================")
 
-    total_size = os.path.getsize(args.image)
     chunk_size = total_size // args.workers
     # ensure chunk size aligns with cluster size
     chunk_size = (chunk_size // args.cluster_size) * args.cluster_size
@@ -374,7 +405,7 @@ def main():
         worker_args.append((
             args.image, args.output, args.cluster_size, valid_formats, start, end, i,
             custom_configs, args.max_search, args.text_density, args.profile, args.max_gap_fill,
-            args.hash_algo, args.validate, args.resume
+            args.hash_algo, args.validate, args.resume, args.max_file_size, args.extract_archives, args.quiet
         ))
 
     try:
