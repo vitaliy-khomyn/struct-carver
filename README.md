@@ -83,6 +83,9 @@ python -m struct_carver.cli --image evidence.dd --output ./recovered_files/ --fo
 * `--max-search`: Maximum number of clusters to scan ahead during a gap-jump search (default: `1000`).
 * `--text-density`: Threshold ratio (0.0 to 1.0) of printable characters to accept non-markup text clusters (default: `0.8`).
 * `--max-gap-fill`: Maximum bytes to zero-fill across an inter-fragment gap in bytes (default: `104857600` / 100MB).
+* `--hash-algo`: Cryptographic hash algorithm for evidence manifest (`sha256`, `md5`, `sha1`, `sha512`, default: `sha256`).
+* `--validate` / `--no-validate`: Deep payload integrity validation pass for extracted files (default: enabled).
+* `--resume`: Resume an interrupted or crashed carving session using checkpoint state (`checkpoint.json`).
 * `-d, --dashboard`: Automatically generate an interactive HTML dashboard (`dashboard.html`) summarizing the results.
 * `--profile`: Enable cProfile performance profiling per worker (saves `.prof` data per worker).
 

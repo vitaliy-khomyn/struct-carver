@@ -12,6 +12,9 @@ import json
 import argparse
 import concurrent.futures
 from struct_carver.core.carver import Carver
+from struct_carver.core.hasher import CryptoHasher, SUPPORTED_HASH_ALGOS
+from struct_carver.core.validator import FileValidator
+from struct_carver.core.checkpoint import CheckpointManager
 from struct_carver.dashboard import generate_dashboard
 from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
 from struct_carver.logger import setup_logger
@@ -32,11 +35,19 @@ def carve_worker(args):
     Args:
         args (tuple): A tuple containing all parameters for Carver execution.
     """
-    if len(args) == 12:
-        image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density, profile, max_gap_fill = args
+    if len(args) == 15:
+        (image, output, cluster_size, formats, start, end, worker_id,
+         custom_configs, max_search, density, profile, max_gap_fill,
+         hash_algo, validate, resume) = args
+    elif len(args) == 12:
+        (image, output, cluster_size, formats, start, end, worker_id,
+         custom_configs, max_search, density, profile, max_gap_fill) = args
+        hash_algo, validate, resume = 'sha256', True, False
     else:
-        image, output, cluster_size, formats, start, end, worker_id, custom_configs, max_search, density, profile = args
+        (image, output, cluster_size, formats, start, end, worker_id,
+         custom_configs, max_search, density, profile) = args
         max_gap_fill = 100 * 1024 * 1024
+        hash_algo, validate, resume = 'sha256', True, False
 
     custom_parsers = []
     for cfg in custom_configs:
@@ -44,10 +55,18 @@ def carve_worker(args):
         footer = bytes.fromhex(cfg['footer_hex'])
         custom_parsers.append(DynamicBinaryParser(cfg['extension'], header, footer))
 
+    hasher = CryptoHasher(hash_algo) if hash_algo else None
+    validator = FileValidator() if validate else None
+    ckpt_path = os.path.join(output, "checkpoint.json")
+    checkpoint_mgr = CheckpointManager(ckpt_path) if resume else None
+
     carver = Carver(
         cluster_size=cluster_size, formats=formats, custom_parsers=custom_parsers,
         max_search_clusters=max_search, text_density_threshold=density,
-        max_gap_fill_bytes=max_gap_fill
+        max_gap_fill_bytes=max_gap_fill,
+        hasher=hasher,
+        validator=validator,
+        checkpoint_mgr=checkpoint_mgr
     )
 
     if profile:
@@ -62,12 +81,84 @@ def carve_worker(args):
         carver.carve(image, output, start, end, worker_id)
 
 
-def merge_worker_reports(output_dir, error_message=None):
+def deduplicate_boundary_overlaps(files, output_dir):
+    """Removes duplicate files carved across worker boundary chunk overlaps.
+
+    When multi-worker carving splits an image, a file beginning near the boundary of
+    Worker N may be carved fully across the boundary, while Worker N+1 also detects
+    a signature within that same span. This function detects and removes such duplicates.
+
+    Args:
+        files (list): List of recovered file dictionaries.
+        output_dir (str): Directory where carved files reside.
+
+    Returns:
+        list: Deduplicated list of file dictionaries.
+    """
+    if not files:
+        return []
+
+    # sort chronologically by physical start offset
+    sorted_files = sorted(
+        files,
+        key=lambda x: x["fragments"][0]["start_offset"] if x.get("fragments") else 0
+    )
+
+    deduped = []
+    seen_hashes = set()
+
+    for file_entry in sorted_files:
+        frags = file_entry.get("fragments", [])
+        if not frags:
+            deduped.append(file_entry)
+            continue
+
+        first_offset = frags[0]["start_offset"]
+        file_hash = file_entry.get("file_hash", "")
+
+        is_duplicate = False
+
+        # check 1: identical file content hash
+        if file_hash and file_hash in seen_hashes:
+            is_duplicate = True
+
+        # check 2: start offset falls inside an earlier complete file's fragment span
+        if not is_duplicate:
+            for prior in deduped:
+                if prior.get("status") == "complete":
+                    for p_frag in prior.get("fragments", []):
+                        if p_frag["start_offset"] <= first_offset < p_frag["end_offset"]:
+                            is_duplicate = True
+                            break
+                    if is_duplicate:
+                        break
+
+        if is_duplicate:
+            # remove redundant duplicate file from disk
+            filename = file_entry.get("filename", "")
+            file_path = os.path.join(output_dir, filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+        else:
+            if file_hash:
+                seen_hashes.add(file_hash)
+            deduped.append(file_entry)
+
+    return deduped
+
+
+def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256"):
     """Merges separate JSON reports from individual worker threads into a single report.
+
+    Also runs boundary overlap deduplication and generates forensic evidence manifests.
 
     Args:
         output_dir (str): Directory containing the worker report files.
         error_message (str, optional): An optional error message to attach to the report.
+        hash_algo (str, optional): Algorithm name for forensic checksum manifests.
     """
     report_files = glob.glob(os.path.join(output_dir, "carve_report_w*.json"))
     if not report_files and not error_message:
@@ -79,25 +170,46 @@ def merge_worker_reports(output_dir, error_message=None):
 
     for rf in report_files:
         try:
-            with open(rf, 'r') as f:
+            with open(rf, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 merged_report["files"].extend(data.get("files", []))
         except Exception:
             pass
 
-    # sort recovered files chronologically by their starting physical offset
-    merged_report["files"].sort(key=lambda x: x["fragments"][0]["start_offset"] if x["fragments"] else 0)
+    # apply multi-worker boundary deduplication
+    merged_report["files"] = deduplicate_boundary_overlaps(merged_report["files"], output_dir)
 
+    # sort recovered files chronologically by their starting physical offset
+    merged_report["files"].sort(key=lambda x: x["fragments"][0]["start_offset"] if x.get("fragments") else 0)
+
+    # write consolidated carve report
     merged_path = os.path.join(output_dir, "carve_report.json")
-    with open(merged_path, 'w') as f:
+    with open(merged_path, 'w', encoding='utf-8') as f:
         json.dump(merged_report, f, indent=4)
+
+    # generate forensic evidence manifests
+    try:
+        hasher = CryptoHasher(hash_algo)
+        manifest_name = f"manifest.{hash_algo}"
+        manifest_path = os.path.join(output_dir, manifest_name)
+        with open(manifest_path, "w", encoding="utf-8") as f_man:
+            f_man.write(hasher.generate_manifest_content(merged_report["files"]))
+
+        csv_path = os.path.join(output_dir, "manifest.csv")
+        with open(csv_path, "w", encoding="utf-8") as f_csv:
+            f_csv.write(hasher.generate_csv_manifest(merged_report["files"]))
+    except Exception:
+        pass
 
     # clean up temporary worker reports
     for rf in report_files:
-        os.remove(rf)
+        try:
+            os.remove(rf)
+        except OSError:
+            pass
 
     logger = setup_logger("Merge")
-    logger.info("Worker reports successfully merged into single carve_report.json")
+    logger.info("Worker reports successfully merged into single carve_report.json and manifests created")
 
 
 def main():
@@ -112,6 +224,10 @@ def main():
     parser.add_argument('--max-search', type=int, default=1000, help="Max clusters to scan during a gap-jump (default: 1000)")
     parser.add_argument('--text-density', type=float, default=0.8, help="Text density threshold for accepting tagless clusters (default: 0.8)")
     parser.add_argument('--max-gap-fill', type=int, default=100 * 1024 * 1024, help="Max bytes to zero-fill across a gap jump in bytes (default: 100MB)")
+    parser.add_argument('--hash-algo', default='sha256', choices=SUPPORTED_HASH_ALGOS, help=f"Cryptographic hash algorithm for evidence manifest (default: sha256). Choices: {', '.join(SUPPORTED_HASH_ALGOS)}")
+    parser.add_argument('--validate', dest='validate', action='store_true', default=True, help="Perform forensic validation pass on carved files (default: True)")
+    parser.add_argument('--no-validate', dest='validate', action='store_false', help="Disable forensic payload validation")
+    parser.add_argument('--resume', action='store_true', help="Resume an interrupted carving session from checkpoint")
     parser.add_argument('-d', '--dashboard', action='store_true', help="Automatically generate an interactive HTML dashboard upon completion.")
     parser.add_argument('--profile', action='store_true', help="Enable cProfile performance profiling per worker.")
 
@@ -119,13 +235,31 @@ def main():
 
     # dynamically determine the numbered output directory based on original image filename
     img_name = os.path.basename(args.image)
-    i = 1
-    while True:
-        candidate = os.path.join(args.output, f"{img_name}.{i}")
-        if not os.path.exists(candidate):
-            args.output = candidate
-            break
-        i += 1
+    if args.resume:
+        # locate the most recent candidate directory containing a checkpoint
+        latest_candidate = None
+        i = 1
+        while True:
+            candidate = os.path.join(args.output, f"{img_name}.{i}")
+            if os.path.exists(candidate):
+                latest_candidate = candidate
+                i += 1
+            else:
+                break
+        if latest_candidate and os.path.exists(os.path.join(latest_candidate, "checkpoint.json")):
+            args.output = latest_candidate
+        elif os.path.exists(os.path.join(args.output, "checkpoint.json")):
+            pass
+        elif latest_candidate:
+            args.output = latest_candidate
+    else:
+        i = 1
+        while True:
+            candidate = os.path.join(args.output, f"{img_name}.{i}")
+            if not os.path.exists(candidate):
+                args.output = candidate
+                break
+            i += 1
 
     # ensure output directory exists before configuring loggers
     os.makedirs(args.output, exist_ok=True)
@@ -184,6 +318,9 @@ def main():
     logger.info(f"Max Search:   {args.max_search} clusters")
     logger.info(f"Text Density: {args.text_density * 100}%")
     logger.info(f"Max Gap Fill: {args.max_gap_fill // (1024 * 1024)} MB")
+    logger.info(f"Hash Algo:    {args.hash_algo.upper()}")
+    logger.info(f"Validation:   {'Enabled' if args.validate else 'Disabled'}")
+    logger.info(f"Resume Mode:  {'Enabled' if args.resume else 'Disabled'}")
     logger.info(f"Workers:      {args.workers}")
     if custom_configs:
         logger.info(f"Custom Types: {len(custom_configs)} formats loaded from config")
@@ -200,7 +337,11 @@ def main():
     for i in range(args.workers):
         start = i * chunk_size
         end = start + chunk_size if i < args.workers - 1 else total_size
-        worker_args.append((args.image, args.output, args.cluster_size, valid_formats, start, end, i, custom_configs, args.max_search, args.text_density, args.profile, args.max_gap_fill))
+        worker_args.append((
+            args.image, args.output, args.cluster_size, valid_formats, start, end, i,
+            custom_configs, args.max_search, args.text_density, args.profile, args.max_gap_fill,
+            args.hash_algo, args.validate, args.resume
+        ))
 
     try:
         if args.workers == 1:
@@ -213,7 +354,7 @@ def main():
         # add newlines to push terminal prompt safely below the multiprocess tqdm output bars
         print("\n" * args.workers)
         logger.info("Carving process completed successfully.")
-        merge_worker_reports(args.output)
+        merge_worker_reports(args.output, hash_algo=args.hash_algo)
 
         if args.dashboard:
             json_report = os.path.join(args.output, "carve_report.json")
@@ -225,7 +366,7 @@ def main():
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}", exc_info=True)
         try:
-            merge_worker_reports(args.output, error_message=str(e))
+            merge_worker_reports(args.output, error_message=str(e), hash_algo=args.hash_algo)
             if args.dashboard:
                 json_report = os.path.join(args.output, "carve_report.json")
                 html_out = os.path.join(args.output, "dashboard.html")

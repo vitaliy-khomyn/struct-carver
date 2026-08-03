@@ -59,3 +59,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(merged_data["files"][0]["filename"], "carved_w2_0.pdf")
             self.assertEqual(merged_data["files"][1]["filename"], "carved_w1_0.json")
             self.assertEqual(merged_data["files"][2]["filename"], "carved_w0_0.xml")
+
+            # verify manifest files generated
+            self.assertTrue(os.path.exists(os.path.join(temp_dir, "manifest.sha256")))
+            self.assertTrue(os.path.exists(os.path.join(temp_dir, "manifest.csv")))

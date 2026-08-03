@@ -12,6 +12,9 @@ from struct_carver.core.buffered_reader import BufferedClusterReader
 from struct_carver.core.header_detector import HeaderDetector
 from struct_carver.core.gap_jumper import GapJumper
 from struct_carver.core.post_processor import PostProcessor
+from struct_carver.core.hasher import CryptoHasher
+from struct_carver.core.validator import FileValidator
+from struct_carver.core.checkpoint import CheckpointManager
 from struct_carver.formats.registry import ParserRegistry
 from struct_carver.logger import setup_logger
 
@@ -33,7 +36,10 @@ class Carver:
         custom_parsers: Optional[List[Any]] = None,
         max_search_clusters: int = 1000,
         text_density_threshold: float = 0.8,
-        max_gap_fill_bytes: int = 100 * 1024 * 1024
+        max_gap_fill_bytes: int = 100 * 1024 * 1024,
+        hasher: Optional[Any] = None,
+        validator: Optional[Any] = None,
+        checkpoint_mgr: Optional[Any] = None,
     ):
         """Initializes the carver orchestrator and underlying components.
 
@@ -44,11 +50,28 @@ class Carver:
             max_search_clusters (int, optional): Max clusters to look ahead during a gap jump.
             text_density_threshold (float, optional): Text ratio to validate non-tag text clusters.
             max_gap_fill_bytes (int, optional): Maximum bytes to zero-fill across a gap (default: 100MB).
+            hasher (Optional[Any], optional): CryptoHasher instance or algorithm name (default: None).
+            validator (Optional[Any], optional): FileValidator instance or bool (default: None).
+            checkpoint_mgr (Optional[Any], optional): CheckpointManager instance for resuming (default: None).
         """
         self.cluster_size = cluster_size
         self.max_search_clusters = max_search_clusters
         self.text_density_threshold = text_density_threshold
         self.max_gap_fill_bytes = max_gap_fill_bytes
+
+        if isinstance(hasher, str):
+            self.hasher: Optional[CryptoHasher] = CryptoHasher(hasher)
+        else:
+            self.hasher = hasher
+
+        if validator is True:
+            self.validator: Optional[FileValidator] = FileValidator()
+        elif validator is False:
+            self.validator = None
+        else:
+            self.validator = validator
+
+        self.checkpoint_mgr: Optional[CheckpointManager] = checkpoint_mgr
 
         self.registry = ParserRegistry(formats=formats, custom_parsers=custom_parsers)
         self.header_detector = HeaderDetector(self.registry)
@@ -123,6 +146,50 @@ class Carver:
         """Delegates post-processing to PostProcessor."""
         return self.post_processor.post_process(file_path, ext, output_dir, filename, logger)
 
+    def _hash_fragments(self, image_path: str, fragments: List[Dict[str, Any]]) -> None:
+        """Computes fragment-level cryptographic hashes if a hasher is configured."""
+        if not self.hasher or not os.path.exists(image_path):
+            return
+        try:
+            with open(image_path, "rb") as f_img:
+                for frag in fragments:
+                    f_img.seek(frag["start_offset"])
+                    data = f_img.read(frag["size"])
+                    frag["fragment_hash"] = self.hasher.hash_bytes(data)
+        except Exception:
+            pass
+
+    def _finalize_file_record(
+        self,
+        image_path: str,
+        file_path: str,
+        file_id: int,
+        filename: str,
+        fmt: str,
+        status: str,
+        fragments: List[Dict[str, Any]],
+        worker_id: int,
+        current_offset: int,
+    ) -> Dict[str, Any]:
+        """Builds a forensic file record with hashes, fragment hashes, and validation results."""
+        self._hash_fragments(image_path, fragments)
+        record: Dict[str, Any] = {
+            "file_id": file_id,
+            "filename": filename,
+            "format": fmt,
+            "status": status,
+            "fragments": fragments,
+            "total_size": sum(f["size"] for f in fragments)
+        }
+        if self.hasher:
+            record["hash_algo"] = self.hasher.algo_name
+            record["file_hash"] = self.hasher.hash_file(file_path)
+        if self.validator:
+            record["validation"] = self.validator.validate(file_path, fmt)
+        if self.checkpoint_mgr:
+            self.checkpoint_mgr.save_worker_progress(worker_id, current_offset, [record])
+        return record
+
     def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: Optional[int] = None, worker_id: int = 0):
         """Carves supported files out of the raw forensic image file stream.
 
@@ -142,11 +209,22 @@ class Carver:
             total_size = os.path.getsize(image_path)
             end_boundary = end_offset if end_offset else total_size
 
+            file_id = 0
+            if self.checkpoint_mgr:
+                resumed_start = self.checkpoint_mgr.get_worker_start_offset(worker_id, start_offset)
+                if resumed_start > start_offset:
+                    logger.info(f"Resuming worker {worker_id} from checkpoint offset {resumed_start} (originally {start_offset})")
+                    start_offset = resumed_start
+                recovered = self.checkpoint_mgr.get_recovered_files()
+                if recovered:
+                    existing_ids = [f["file_id"] for f in recovered if isinstance(f.get("file_id"), int)]
+                    if existing_ids:
+                        file_id = max(existing_ids) + 1
+
             with BufferedClusterReader(image_path) as f:
                 if start_offset > 0:
                     f.seek(start_offset)
 
-                file_id = 0
                 carving = False
                 current_file_handle = None
                 engine = None
@@ -163,6 +241,7 @@ class Carver:
                     f.seek(start_offset)
 
                 pbar = tqdm(total=end_boundary - start_offset, unit='B', unit_scale=True, desc=f"Worker {worker_id}", leave=True, position=worker_id)
+                cluster_count = 0
                 try:
                     while True:
                         if not carving and f.tell() >= end_boundary:
@@ -178,6 +257,10 @@ class Carver:
                         phys_end = f.tell()
                         if not cluster:
                             break
+
+                        cluster_count += 1
+                        if self.checkpoint_mgr and cluster_count % 1000 == 0:
+                            self.checkpoint_mgr.save_worker_progress(worker_id, phys_start)
 
                         just_started = False
                         raw_cluster = cluster  # save original before potential slicing
@@ -293,14 +376,18 @@ class Carver:
                                         if os.path.exists(old_path):
                                             os.rename(old_path, new_path)
 
-                                    report["files"].append({
-                                        "file_id": file_id,
-                                        "filename": current_filename,
-                                        "format": current_ext,
-                                        "status": "partial",
-                                        "fragments": current_fragments,
-                                        "total_size": sum(f["size"] for f in current_fragments)
-                                    })
+                                    record = self._finalize_file_record(
+                                        image_path=image_path,
+                                        file_path=os.path.join(output_dir, current_filename),
+                                        file_id=file_id,
+                                        filename=current_filename,
+                                        fmt=current_ext,
+                                        status="partial",
+                                        fragments=current_fragments,
+                                        worker_id=worker_id,
+                                        current_offset=f.tell(),
+                                    )
+                                    report["files"].append(record)
                                     file_id += 1
                                     prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
                                     continue
@@ -319,21 +406,23 @@ class Carver:
                                     current_file_handle.close()
                                     current_file_handle = None
 
-                                report["files"].append({
-                                    "file_id": file_id,
-                                    "filename": current_filename,
-                                    "format": current_ext,
-                                    "status": "complete",
-                                    "fragments": current_fragments,
-                                    "total_size": sum(f["size"] for f in current_fragments)
-                                })
-
                                 # trigger post-processing routines
                                 carved_file_path = os.path.join(output_dir, current_filename)
                                 new_ext, new_filename = self._post_process_file(carved_file_path, current_ext, output_dir, current_filename, logger)
-                                if new_ext != current_ext:
-                                    report["files"][-1]["filename"] = new_filename
-                                    report["files"][-1]["format"] = new_ext
+                                final_path = os.path.join(output_dir, new_filename)
+
+                                record = self._finalize_file_record(
+                                    image_path=image_path,
+                                    file_path=final_path,
+                                    file_id=file_id,
+                                    filename=new_filename,
+                                    fmt=new_ext,
+                                    status="complete",
+                                    fragments=current_fragments,
+                                    worker_id=worker_id,
+                                    current_offset=f.tell(),
+                                )
+                                report["files"].append(record)
 
                                 file_id += 1
                                 carving = False
@@ -357,14 +446,21 @@ class Carver:
                         if os.path.exists(old_path):
                             os.rename(old_path, new_path)
 
-                        report["files"].append({
-                            "file_id": file_id,
-                            "filename": current_filename,
-                            "format": current_ext,
-                            "status": "incomplete_eof",
-                            "fragments": current_fragments,
-                            "total_size": sum(f["size"] for f in current_fragments)
-                        })
+                        record = self._finalize_file_record(
+                            image_path=image_path,
+                            file_path=new_path,
+                            file_id=file_id,
+                            filename=current_filename,
+                            fmt=current_ext,
+                            status="incomplete_eof",
+                            fragments=current_fragments,
+                            worker_id=worker_id,
+                            current_offset=f.tell(),
+                        )
+                        report["files"].append(record)
+
+                    if self.checkpoint_mgr:
+                        self.checkpoint_mgr.save_worker_progress(worker_id, f.tell(), report["files"])
 
                     report_path = os.path.join(output_dir, f"carve_report_w{worker_id}.json")
                     try:
