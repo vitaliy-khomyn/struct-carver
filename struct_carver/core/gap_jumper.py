@@ -1,14 +1,10 @@
 """Gap jumper module for Struct Carver!
 
 This module provides the GapJumper class, which handles non-sequential gap-jumping sweeps,
-cluster candidate state evaluation, and LRU cache management.
+cluster candidate state evaluation, and candidate result caching.
 """
 
 from typing import List, Tuple, Dict, Any, Optional
-from struct_carver.formats.text.xml_parser import XMLParser
-from struct_carver.formats.text.html_parser import HTMLParser
-from struct_carver.formats.text.json_parser import JSONParser
-from struct_carver.formats.text.rtf_parser import RTFParser
 
 
 class GapJumper:
@@ -131,13 +127,9 @@ class GapJumper:
             else:
                 is_text_heavy = False
                 if not is_binary:
-                    # performance optimization: lazy check for text parsers to avoid cloning and regex matching
+                    # performance optimization: lazy check for text parsers to avoid regex matching
                     is_text_heavy = (len(candidate_cluster) - candidate_cluster.count(b'\x00')) >= (self.cluster_size * self.text_density_threshold)
-                    has_interesting_chars = False
-                    if isinstance(parser_snapshot, (XMLParser, HTMLParser)):
-                        has_interesting_chars = b'<' in candidate_cluster
-                    elif isinstance(parser_snapshot, (JSONParser, RTFParser)):
-                        has_interesting_chars = any(c in candidate_cluster for c in [b'{', b'}', b'[', b']', b'\\'])
+                    has_interesting_chars = parser_snapshot.has_continuation_markers(candidate_cluster)
                     
                     if not is_text_heavy and not has_interesting_chars:
                         search_count += 1
@@ -145,24 +137,12 @@ class GapJumper:
 
                 test_engine = snapshot.clone()
                 test_parser = parser_snapshot.clone()
+                test_parser.prepare_for_gap_jump()
 
-                # prepare the parser and engine for gap-jump testing.
-                # mid-stream state (pending_endstream, bytes_remaining) would
-                # cause parsers like PDFParser to expect the cluster to continue
-                # a specific byte sequence from the fragmentation point — but
-                # candidate clusters are independent disk fragments, so we must
-                # test them from a clean object-boundary perspective.
                 if is_binary:
-                    # reset any "waiting for endstream / next N bytes" flags.
-                    if hasattr(test_parser, 'pending_endstream'):
-                        test_parser.pending_endstream = False
-                        test_parser.pending_bytes_needed = 0
-                    # bytes_remaining=-1 is PDF's "search for endstream" mode;
-                    # 0 means "look for next object/stream keyword".
-                    # reset to 0 so the parser scans for structure from scratch.
+                    # reset remaining bytes expectation so candidate is evaluated from a clean boundary
                     test_engine.bytes_remaining = 0
-                    # start with a clean corruption flag so process_binary
-                    # reflects the candidate result, not the snapshot state.
+                    # start with a clean corruption flag so process_binary reflects candidate result
                     test_engine.is_corrupted = False
 
                 candidate_tags, new_overlap, bytes_to_advance = self.process_cluster(candidate_cluster, test_parser, test_engine, current_text_overlap)

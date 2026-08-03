@@ -1,4 +1,9 @@
-"""Unit tests for the CLI component."""
+"""Unit tests for the CLI orchestration module in Struct Carver!
+
+Verifies worker report consolidation, fragment chronological sorting, temporary file cleanup,
+and manifest generation.
+"""
+
 import os
 import json
 import tempfile
@@ -7,9 +12,10 @@ from struct_carver.cli import merge_worker_reports
 
 
 class TestCLI(unittest.TestCase):
-    """Test suite for CLI parsing and carving."""
+    """Test suite verifying CLI worker management and report merging."""
+
     def test_merge_worker_reports(self):
-        """Tests that merge worker reports."""
+        """Verifies multi-worker reports are merged, sorted by disk offset, and manifests created."""
         with tempfile.TemporaryDirectory() as temp_dir:
             report_w0 = {
                 "files": [
@@ -63,3 +69,7 @@ class TestCLI(unittest.TestCase):
             # verify manifest files generated
             self.assertTrue(os.path.exists(os.path.join(temp_dir, "manifest.sha256")))
             self.assertTrue(os.path.exists(os.path.join(temp_dir, "manifest.csv")))
+
+
+if __name__ == '__main__':
+    unittest.main()

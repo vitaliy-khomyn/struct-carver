@@ -16,17 +16,11 @@ from struct_carver.core.hasher import CryptoHasher, SUPPORTED_HASH_ALGOS
 from struct_carver.core.validator import FileValidator
 from struct_carver.core.checkpoint import CheckpointManager
 from struct_carver.dashboard import generate_dashboard
+from struct_carver.formats.registry import ParserRegistry
 from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
 from struct_carver.logger import setup_logger
 
-SUPPORTED_FORMATS = [
-    'xml', 'html', 'pdf', 'json', 'rtf', 'zip', 'sqlite', 'sqlitewal',
-    'jpg', 'png', 'gif', 'bmp', 'tiff', 'pcx',
-    'wav', 'mp3', 'au', 'wma', 'wmv',
-    'avi', 'mp4', 'mov', 'flv', 'mpg',
-    '7z', 'rar', 'gz', 'bz2', 'tar', 'wim',
-    'docx', 'xlsx', 'pptx', 'tif'
-]
+SUPPORTED_FORMATS = ParserRegistry.get_supported_formats()
 
 
 def carve_worker(args):

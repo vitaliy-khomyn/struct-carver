@@ -1,25 +1,34 @@
-"""Unit tests for the JSON component."""
+"""Unit tests for JSONParser in Struct Carver!
+
+Verifies bracket/brace extraction, escaped quote handling inside strings, and cross-chunk string states.
+"""
+
 import unittest
 from struct_carver.formats.text.json_parser import JSONParser
 
 
 class TestJSONParser(unittest.TestCase):
-    """Test suite for JSONParser parsing and carving."""
+    """Test suite verifying JSON structural token extraction."""
+
     def setUp(self):
         self.parser = JSONParser()
 
     def test_escaped_strings(self):
-        """Tests that escaped strings."""
+        """Verifies structural brackets inside escaped strings are ignored."""
         data = b'{"k{e}y": ["[\\"escaped\\"]", "value2"]}'
         tags, _ = self.parser.extract_tags(data)
         expected = [("{", False), ("[", False), ("[", True), ("{", True)]
         self.assertEqual(tags, expected)
 
     def test_cross_chunk_string_state(self):
-        """Tests that cross chunk string state."""
+        """Verifies strings spanning across chunk boundaries continue to mask bracket tokens."""
         chunk1 = b'{"k{e}y": ["started string ['
         chunk2 = b'] ended string", "value2"]}'
         tags1, _ = self.parser.extract_tags(chunk1)
         tags2, _ = self.parser.extract_tags(chunk2)
         self.assertEqual(tags1, [("{", False), ("[", False)])
         self.assertEqual(tags2, [("[", True), ("{", True)])
+
+
+if __name__ == '__main__':
+    unittest.main()

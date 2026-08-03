@@ -1,4 +1,9 @@
-"""Unit tests for the DASHBOARD component."""
+"""Unit tests for the forensic dashboard generation in Struct Carver!
+
+Verifies HTML dashboard compilation from carve_report.json, metric card rendering,
+and fragment map layout.
+"""
+
 import os
 import json
 import tempfile
@@ -7,9 +12,10 @@ from struct_carver.dashboard import generate_dashboard
 
 
 class TestDashboard(unittest.TestCase):
-    """Test suite for Dashboard parsing and carving."""
+    """Test suite verifying interactive HTML dashboard generation."""
+
     def test_generate_dashboard(self):
-        """Tests that generate dashboard."""
+        """Verifies HTML dashboard generation, filename rendering, and recovery metrics."""
         with tempfile.TemporaryDirectory() as temp_dir:
             json_path = os.path.join(temp_dir, "carve_report.json")
             html_path = os.path.join(temp_dir, "dashboard.html")
@@ -26,7 +32,7 @@ class TestDashboard(unittest.TestCase):
                     }
                 ]
             }
-            with open(json_path, 'w') as f:
+            with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(mock_report, f)
 
             generate_dashboard(json_path, html_path)
@@ -36,3 +42,7 @@ class TestDashboard(unittest.TestCase):
                 html_content = f.read()
                 self.assertIn("carved_w0_0.xml", html_content)
                 self.assertIn("Complete Recoveries", html_content)
+
+
+if __name__ == '__main__':
+    unittest.main()

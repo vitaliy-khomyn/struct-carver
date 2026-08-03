@@ -84,6 +84,15 @@ class ParserRegistry:
         ext_map (Dict[Type, str]): Reverse lookup dictionary mapping parser classes to extensions.
     """
 
+    @classmethod
+    def get_supported_formats(cls) -> List[str]:
+        """Returns a list of all built-in supported format extensions.
+
+        Returns:
+            List[str]: List of format extensions.
+        """
+        return list(AVAILABLE_PARSERS.keys())
+
     def __init__(self, formats: Optional[List[str]] = None, custom_parsers: Optional[List[Any]] = None):
         """Initializes the parser registry.
 

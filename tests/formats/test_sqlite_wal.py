@@ -24,7 +24,7 @@ class TestSQLiteWALParser(unittest.TestCase):
         return file_header + frame_header + frame_data
 
     def test_little_endian_wal(self):
-        """Tests that little endian wal."""
+        """Verify parsing of SQLite WAL log with little-endian magic bytes."""
         # 0x377f0682 triggers Little-Endian parsing ('<')
         data = self._build_mock_wal('<', b'\x37\x7f\x06\x82', 4096, 12345, 67890)
 
@@ -37,7 +37,7 @@ class TestSQLiteWALParser(unittest.TestCase):
         self.assertEqual(self.parser.salt2, 67890)
 
     def test_big_endian_wal(self):
-        """Tests that big endian wal."""
+        """Verify parsing of SQLite WAL log with big-endian magic bytes."""
         # 0x377f0683 triggers Big-Endian parsing ('>')
         data = self._build_mock_wal('>', b'\x37\x7f\x06\x83', 1024, 54321, 9876)
 
@@ -50,7 +50,7 @@ class TestSQLiteWALParser(unittest.TestCase):
         self.assertEqual(self.parser.salt2, 9876)
 
     def test_wal_frame_mismatch_eof_completion(self):
-        """Tests that wal frame mismatch eof completion."""
+        """Verify that a salt mismatch terminates WAL parsing as a valid EOF."""
         # inject an invalid frame salt to simulate a broken frame/fragmentation boundary, which should act as EOF
         data = self._build_mock_wal('<', b'\x37\x7f\x06\x82', 4096, 1111, 2222, valid_frame=False)
         is_corrupted, is_complete, advance, remaining = self.parser.analyze_binary(data)
@@ -59,7 +59,7 @@ class TestSQLiteWALParser(unittest.TestCase):
         self.assertEqual(advance, 32, "WAL completion should advance exactly up to the last valid frame (32 bytes header).")
 
     def test_wal_spillover_in_frame_data(self):
-        """Tests that wal spillover in frame data."""
+        """Verify remaining byte calculation when frame data spans buffer boundaries."""
         # frame data split across chunks
         data = self._build_mock_wal('<', b'\x37\x7f\x06\x82', 4096, 111, 222)
 
@@ -72,7 +72,7 @@ class TestSQLiteWALParser(unittest.TestCase):
         self.assertEqual(remaining, 3996)  # 4096 - 100
 
     def test_wal_spillover_in_frame_header(self):
-        """Tests that wal spillover in frame header."""
+        """Verify remaining byte calculation when frame header spans buffer boundaries."""
         # frame header split across chunks
         data = self._build_mock_wal('>', b'\x37\x7f\x06\x83', 1024, 333, 444)
 

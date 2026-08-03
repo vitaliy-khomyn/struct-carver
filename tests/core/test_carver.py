@@ -1,11 +1,20 @@
-"""Unit tests for the CARVER component."""
+"""Integration tests for Carver orchestrator in Struct Carver!
+
+Verifies non-sequential gap jumping across corrupted clusters for textual (XML, JSON)
+and binary (PDF, ZIP) formats, multithreaded worker partitioning, custom dynamic
+parsers, cache population, garbage prefix slicing, and zero-filling caps.
+"""
+
 import os
 import json
 import tempfile
 import unittest
+import zipfile
 import concurrent.futures
 from struct_carver.core.carver import Carver
 from struct_carver.formats.dynamic_binary_parser import DynamicBinaryParser
+from struct_carver.formats.text.json_parser import JSONParser
+from struct_carver.formats.binary.zip_parser import ZIPParser
 
 
 def _run_carve_worker(args):
@@ -15,9 +24,10 @@ def _run_carve_worker(args):
 
 
 class TestCarverIntegration(unittest.TestCase):
-    """Test suite for CarverIntegration parsing and carving."""
+    """Integration test suite for the core Carver pipeline."""
+
     def test_non_sequential_gap_jumping(self):
-        """Tests that non sequential gap jumping."""
+        """Verifies XML gap-jumping bypasses corrupted middle cluster and reassembles document."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
@@ -45,7 +55,7 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertNotIn(b'stray text data', data, "The gap-jumping failed; noise was included.")
 
     def test_nested_state_retention_json(self):
-        """Tests that nested state retention json."""
+        """Verifies JSON stack state survives gap jumps across mismatched brackets."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_json.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
@@ -76,7 +86,7 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertNotIn(b'stray text', data, "Gap jumping failed to exclude corrupt cluster.")
 
     def test_binary_state_retention_pdf(self):
-        """Tests that binary state retention pdf."""
+        """Verifies binary offset tracking survives gaps while zero-filling for PDF offset preservation."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_pdf.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
@@ -86,12 +96,7 @@ class TestCarverIntegration(unittest.TestCase):
             pre = b"%pdf-1.4\n1 0 obj << /Length 20 >> endobj stream\n"
             # cluster 1 gives 16 bytes of the stream, leaving 4 bytes remaining for the next chunk
             cluster1 = pre + (b'A' * 16)
-
-            # cluster 2 is corrupt. It supplies the last 4 bytes of the stream,
-            # but fails the 'endstream' validation immediately after.
             cluster2 = (b'B' * 64)
-
-            # cluster 3 is a valid continuation. Supplies last 4 bytes of stream, then endstream.
             cluster3 = b'CCCC\nendstream\n%%eof'.ljust(64, b'\x00')
 
             with open(img_path, 'wb') as f:
@@ -108,220 +113,13 @@ class TestCarverIntegration(unittest.TestCase):
             with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
                 data = f.read()
 
-            # stream should cleanly concatenate the 16 'A's and 4 'C's.
-            self.assertIn(b'A'*16 + b'CCCC\nendstream', data, "Binary stream state was lost during gap jump.")
-            self.assertNotIn(b'B'*64, data, "Gap jumping failed to exclude corrupt binary cluster.")
-
-    def test_carve_report_generation(self):
-        """Tests that carve report generation."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            img_path = os.path.join(temp_dir, "evidence_report.dd")
-            out_dir = os.path.join(temp_dir, "recovered_files")
-
-            cluster_size = 64
-            cluster1 = b'<?xml version="1.0"?><root><item>A</item>'.ljust(cluster_size, b'\x00')
-            cluster2 = b'stray text data </div> random noise'.ljust(cluster_size, b'\x00')
-            cluster3 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
-
-            with open(img_path, 'wb') as f:
-                f.write(cluster1)
-                f.write(cluster2)
-                f.write(cluster3)
-
-            carver = Carver(cluster_size=cluster_size, formats=['xml'])
-            carver.carve(img_path, out_dir)
-
-            report_path = os.path.join(out_dir, "carve_report_w0.json")
-            self.assertTrue(os.path.exists(report_path), "Carve report JSON was not generated.")
-
-            with open(report_path, 'r') as f:
-                report = json.load(f)
-
-            self.assertIn("files", report)
-            self.assertEqual(len(report["files"]), 1, "Report should contain exactly one recovered file.")
-
-            file_record = report["files"][0]
-            self.assertEqual(file_record["status"], "complete", "File status should be logged as complete.")
-            self.assertEqual(file_record["fragments"][0]["start_offset"], 0, "First fragment should start at offset 0.")
-            self.assertEqual(file_record["fragments"][1]["start_offset"], 128, "Second fragment should start at offset 128 after gap-jumping.")
-
-    def test_multithreaded_carving(self):
-        """Tests that multithreaded carving."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            img_path = os.path.join(temp_dir, "evidence_multithread.dd")
-            out_dir = os.path.join(temp_dir, "recovered_files")
-
-            cluster_size = 64
-            # worker 0 (offset 0 - 128)
-            cluster1 = b'<?xml version="1.0"?><root><item>W0</item>'.ljust(cluster_size, b'\x00')
-            cluster2 = b'<item>W0_END</item></root>'.ljust(cluster_size, b'\x00')
-
-            # worker 1 (offset 128 - 256)
-            cluster3 = b'{"worker1": ["part1", '.ljust(cluster_size, b' ')
-            cluster4 = b'"part2"]}'.ljust(cluster_size, b' ')
-
-            with open(img_path, 'wb') as f:
-                f.write(cluster1)
-                f.write(cluster2)
-                f.write(cluster3)
-                f.write(cluster4)
-
-            worker_args = [
-                (img_path, out_dir, cluster_size, ['xml', 'json'], 0, 128, 0),
-                (img_path, out_dir, cluster_size, ['xml', 'json'], 128, 256, 1)
-            ]
-
-            with concurrent.futures.ProcessPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(_run_carve_worker, arg) for arg in worker_args]
-                for future in concurrent.futures.as_completed(futures):
-                    future.result()
-
-            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
-            self.assertEqual(len(carved_files), 2, "Should have recovered exactly two files concurrently.")
-
-            # verify files were generated by distinct workers
-            self.assertTrue(any("w0" in f and f.endswith(".xml") for f in carved_files), "Worker 0 XML missing")
-            self.assertTrue(any("w1" in f and f.endswith(".json") for f in carved_files), "Worker 1 JSON missing")
-
-            # verify reports were generated separately per worker
-            report_files = [f for f in os.listdir(out_dir) if f.startswith("carve_report")]
-            self.assertEqual(len(report_files), 2, "Should have generated two distinct worker reports.")
-            self.assertIn("carve_report_w0.json", report_files)
-            self.assertIn("carve_report_w1.json", report_files)
-
-    def test_custom_dynamic_binary_carving(self):
-        """Tests that custom dynamic binary carving."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            img_path = os.path.join(temp_dir, "evidence_custom.dd")
-            out_dir = os.path.join(temp_dir, "recovered_files")
-
-            cluster_size = 64
-            # mock a custom linear image format (e.g., PNG-like signature)
-            header = b'\x89PNG\r\n'
-            footer = b'IEND\xaeB`\x82'
-
-            cluster1 = header + (b'A' * (cluster_size - len(header)))
-            cluster2 = (b'B' * 20) + footer + (b'\x00' * (cluster_size - len(footer) - 20))
-
-            with open(img_path, 'wb') as f:
-                f.write(cluster1)
-                f.write(cluster2)
-
-            custom_parser = DynamicBinaryParser('png', header, footer)
-            carver = Carver(cluster_size=cluster_size, formats=[], custom_parsers=[custom_parser])
-            carver.carve(img_path, out_dir)
-
-            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
-            self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one custom file.")
-            self.assertTrue(carved_files[0].endswith(".png"), "Carved file should use the custom extension.")
-
-            with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
-                data = f.read()
-
-            self.assertTrue(data.startswith(header), "Carved file should start with the custom header.")
-            self.assertTrue(data.endswith(footer), "Carved file should end with the custom footer.")
-            self.assertEqual(len(data), cluster_size + 20 + len(footer), "File should be accurately trimmed after the footer.")
-
-    def test_cluster_cache_population(self):
-        """Tests that cluster cache population."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            img_path = os.path.join(temp_dir, "evidence_cache.dd")
-            out_dir = os.path.join(temp_dir, "recovered_files")
-
-            cluster_size = 64
-            cluster1 = b'<?xml version="1.0"?><root><item>A</item>'.ljust(cluster_size, b'\x00')
-            # corrupt block to trigger gap-jump and populate cache
-            cluster2 = b'stray text data </div> random noise'.ljust(cluster_size, b'\x00')
-            cluster3 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
-
-            with open(img_path, 'wb') as f:
-                f.write(cluster1)
-                f.write(cluster2)
-                f.write(cluster3)
-
-            carver = Carver(cluster_size=cluster_size, formats=['xml'])
-            carver.carve(img_path, out_dir)
-
-            # verify cache was populated during the gap jump over cluster 2
-            self.assertGreater(len(carver.cluster_cache), 0, "Cluster cache should be populated after a gap jump.")
-
-    def test_garbage_prefix_slicing(self):
-        """Tests that garbage prefix slicing."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            img_path = os.path.join(temp_dir, "evidence_garbage.dd")
-            out_dir = os.path.join(temp_dir, "recovered_files")
-
-            cluster_size = 64
-            # signature starts at offset 20
-            cluster1 = b'random garbage bytes' + b'<?xml version="1.0"?><root><item>A</item>'
-            cluster1 = cluster1[:cluster_size].ljust(cluster_size, b'\x00')
-            cluster2 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
-            # valid continuation: properly closes [, }, }
-            cluster3 = b'"item2"]}}'.ljust(cluster_size, b' ')
-
-            with open(img_path, 'wb') as f:
-                f.write(cluster1)
-                f.write(cluster2)
-                f.write(cluster3)
-
-            carver = Carver(cluster_size=cluster_size, formats=['json'])
-            carver.carve(img_path, out_dir)
-
-            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
-            self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one JSON file.")
-
-            with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
-                data = f.read()
-
-            self.assertIn(b'"item1","item2"', data.replace(b' ', b''), "State was lost during gap jump.")
-            self.assertNotIn(b'stray text', data, "Gap jumping failed to exclude corrupt cluster.")
-
-    def test_binary_state_retention_pdf(self):
-        """Tests that binary state retention pdf."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            img_path = os.path.join(temp_dir, "evidence_pdf.dd")
-            out_dir = os.path.join(temp_dir, "recovered_files")
-
-            cluster_size = 64
-            # 48 bytes before stream data. Stream Length is 20.
-            pre = b"%pdf-1.4\n1 0 obj << /Length 20 >> endobj stream\n"
-            # cluster 1 gives 16 bytes of the stream, leaving 4 bytes remaining for the next chunk
-            cluster1 = pre + (b'A' * 16)
-
-            # cluster 2 is corrupt. It supplies the last 4 bytes of the stream,
-            # but fails the 'endstream' validation immediately after.
-            cluster2 = (b'B' * 64)
-
-            # cluster 3 is a valid continuation. Supplies last 4 bytes of stream, then endstream.
-            cluster3 = b'CCCC\nendstream\n%%eof'.ljust(64, b'\x00')
-
-            with open(img_path, 'wb') as f:
-                f.write(cluster1)
-                f.write(cluster2)
-                f.write(cluster3)
-
-            carver = Carver(cluster_size=cluster_size, formats=['pdf'])
-            carver.carve(img_path, out_dir)
-
-            carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
-            self.assertEqual(len(carved_files), 1, "Carver should have recovered exactly one PDF file.")
-
-            with open(os.path.join(out_dir, carved_files[0]), 'rb') as f:
-                data = f.read()
-
-            # new behaviour: for binary parsers the corrupted cluster (B's) is written
-            # to the output BEFORE the zero-filled gap and the valid continuation.
-            # this preserves internal byte offsets (PDF xref tables stay correct).
-            # the carved file therefore contains: A's ... B's ... zeros ... C's+endstream.
             self.assertIn(b'A'*16, data, "Stream bytes from cluster 1 should be present.")
             self.assertIn(b'CCCC\nendstream', data, "Continuation bytes should be present.")
-            # the B's are now included (they fill the gap position for offset preservation).
             self.assertIn(b'B'*64, data, "Corrupted cluster should be included for binary offset preservation.")
-            # file must end with %%eof (structural completeness).
             self.assertIn(b'%%eof', data.lower(), "Carved PDF must contain %%eof marker.")
 
     def test_carve_report_generation(self):
-        """Tests that carve report generation."""
+        """Verifies individual worker carve report captures fragment physical offsets accurately."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_report.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
@@ -354,17 +152,15 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertEqual(file_record["fragments"][1]["start_offset"], 128, "Second fragment should start at offset 128 after gap-jumping.")
 
     def test_multithreaded_carving(self):
-        """Tests that multithreaded carving."""
+        """Verifies concurrent worker execution over partition boundaries."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_multithread.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
 
             cluster_size = 64
-            # worker 0 (offset 0 - 128)
             cluster1 = b'<?xml version="1.0"?><root><item>W0</item>'.ljust(cluster_size, b'\x00')
             cluster2 = b'<item>W0_END</item></root>'.ljust(cluster_size, b'\x00')
 
-            # worker 1 (offset 128 - 256)
             cluster3 = b'{"worker1": ["part1", '.ljust(cluster_size, b' ')
             cluster4 = b'"part2"]}'.ljust(cluster_size, b' ')
 
@@ -387,24 +183,21 @@ class TestCarverIntegration(unittest.TestCase):
             carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
             self.assertEqual(len(carved_files), 2, "Should have recovered exactly two files concurrently.")
 
-            # verify files were generated by distinct workers
             self.assertTrue(any("w0" in f and f.endswith(".xml") for f in carved_files), "Worker 0 XML missing")
             self.assertTrue(any("w1" in f and f.endswith(".json") for f in carved_files), "Worker 1 JSON missing")
 
-            # verify reports were generated separately per worker
             report_files = [f for f in os.listdir(out_dir) if f.startswith("carve_report")]
             self.assertEqual(len(report_files), 2, "Should have generated two distinct worker reports.")
             self.assertIn("carve_report_w0.json", report_files)
             self.assertIn("carve_report_w1.json", report_files)
 
     def test_custom_dynamic_binary_carving(self):
-        """Tests that custom dynamic binary carving."""
+        """Verifies custom binary format carving defined via header/footer hex signatures."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_custom.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
 
             cluster_size = 64
-            # mock a custom linear image format (e.g., PNG-like signature)
             header = b'\x89PNG\r\n'
             footer = b'IEND\xaeB`\x82'
 
@@ -431,14 +224,13 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertEqual(len(data), cluster_size + 20 + len(footer), "File should be accurately trimmed after the footer.")
 
     def test_cluster_cache_population(self):
-        """Tests that cluster cache population."""
+        """Verifies gap-jumping populates the cluster cache for candidate evaluations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_cache.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
 
             cluster_size = 64
             cluster1 = b'<?xml version="1.0"?><root><item>A</item>'.ljust(cluster_size, b'\x00')
-            # corrupt block to trigger gap-jump and populate cache
             cluster2 = b'stray text data </div> random noise'.ljust(cluster_size, b'\x00')
             cluster3 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
 
@@ -450,17 +242,15 @@ class TestCarverIntegration(unittest.TestCase):
             carver = Carver(cluster_size=cluster_size, formats=['xml'])
             carver.carve(img_path, out_dir)
 
-            # verify cache was populated during the gap jump over cluster 2
             self.assertGreater(len(carver.cluster_cache), 0, "Cluster cache should be populated after a gap jump.")
 
     def test_garbage_prefix_slicing(self):
-        """Tests that garbage prefix slicing."""
+        """Verifies that signature offsets within a cluster strip preceding garbage bytes."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_garbage.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
 
             cluster_size = 64
-            # signature starts at offset 20
             cluster1 = b'random garbage bytes' + b'<?xml version="1.0"?><root><item>A</item>'
             cluster1 = cluster1[:cluster_size].ljust(cluster_size, b'\x00')
             cluster2 = b'<item>B</item></root>'.ljust(cluster_size, b'\x00')
@@ -481,14 +271,12 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertTrue(data.startswith(b'<?xml'), "Recovered file should start exactly with the XML header, not garbage prefix.")
 
     def test_office_document_detection_from_zip(self):
-        """Tests that office document detection from zip."""
-        import zipfile
+        """Verifies post-processing detects Office XML relationships in ZIP archives and renames to docx."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_docx.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
             zip_path = os.path.join(temp_dir, "test.zip")
 
-            # create a valid zip file representing a docx document
             with zipfile.ZipFile(zip_path, 'w') as zf:
                 zf.writestr("word/document.xml", "<document>hello</document>")
                 zf.writestr("[Content_Types].xml", "<types></types>")
@@ -496,7 +284,6 @@ class TestCarverIntegration(unittest.TestCase):
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
-            # write it into image file with alignment to 64-byte clusters
             cluster_size = 64
             padded_zip_data = zip_data + b'\x00' * (cluster_size - (len(zip_data) % cluster_size))
             with open(img_path, 'wb') as f:
@@ -506,11 +293,9 @@ class TestCarverIntegration(unittest.TestCase):
             carver.carve(img_path, out_dir)
 
             carved_files = [f for f in os.listdir(out_dir) if not f.startswith("carve_report") and not f.endswith(".log")]
-            # should have renamed it to docx
             self.assertEqual(len(carved_files), 1)
             self.assertTrue(carved_files[0].endswith(".docx"), f"Expected .docx extension, got {carved_files[0]}")
 
-            # verify report
             report_path = os.path.join(out_dir, "carve_report_w0.json")
             with open(report_path, 'r') as f:
                 report = json.load(f)
@@ -518,34 +303,29 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertTrue(report["files"][0]["filename"].endswith(".docx"))
 
     def test_json_parser_binary_rejection(self):
-        """Tests that json parser binary rejection."""
-        from struct_carver.formats.text.json_parser import JSONParser
+        """Verifies JSON parser marks corruption when encountering control or illegal characters outside strings."""
         parser = JSONParser()
-        
-        # JSON with random binary data outside string
+
         data = b'{"key": 1}\x00'
         tags, last_offset = parser.extract_tags(data)
         self.assertTrue(parser.is_corrupted, "Parser should detect control byte outside string as corruption.")
 
         parser.reset()
-        # JSON with invalid character outside string
         data2 = b'{"key": 1} x'
         tags, last_offset = parser.extract_tags(data2)
         self.assertTrue(parser.is_corrupted, "Parser should detect invalid character outside string as corruption.")
 
     def test_zip_parser_fragmentation_detection(self):
-        """Tests that zip parser fragmentation detection."""
-        from struct_carver.formats.binary.zip_parser import ZIPParser
+        """Verifies ZIP parser flags corruption when expected PK signature is missing in chunk."""
         parser = ZIPParser()
         parser.is_open = True
-        
-        # chunk has no signature and has at least 4 bytes of data -> should trigger corruption
+
         data = b'random garbage bytes'
         is_corr, is_comp, bytes_to_adv, expected = parser.analyze_binary(data)
         self.assertTrue(is_corr, "Should detect fragmentation/corruption when signature is missing.")
 
     def test_chunked_zero_fill_with_cap(self):
-        """Tests that chunked zero-filling works and respects max_gap_fill_bytes ceiling."""
+        """Verifies memory-safe zero-filling across gap jumps respects max_gap_fill_bytes ceiling."""
         with tempfile.TemporaryDirectory() as temp_dir:
             img_path = os.path.join(temp_dir, "evidence_pdf_gap.dd")
             out_dir = os.path.join(temp_dir, "recovered_files")
@@ -553,9 +333,9 @@ class TestCarverIntegration(unittest.TestCase):
             cluster_size = 64
             pre = b"%pdf-1.4\n1 0 obj << /Length 20 >> endobj stream\n"
             cluster1 = pre + (b'A' * 16)
-            cluster2 = (b'B' * 64)  # corrupted cluster
-            gap_cluster = (b'\x00' * 64)  # unallocated gap cluster
-            cluster3 = b'CCCC\nendstream\n%%eof'.ljust(64, b'\x00')  # candidate continuation
+            cluster2 = (b'B' * 64)
+            gap_cluster = (b'\x00' * 64)
+            cluster3 = b'CCCC\nendstream\n%%eof'.ljust(64, b'\x00')
 
             with open(img_path, 'wb') as f:
                 f.write(cluster1)
@@ -576,3 +356,7 @@ class TestCarverIntegration(unittest.TestCase):
             self.assertIn(b'A'*16, data)
             self.assertIn(b'CCCC\nendstream', data)
             self.assertIn(b'\x00'*32, data)
+
+
+if __name__ == '__main__':
+    unittest.main()

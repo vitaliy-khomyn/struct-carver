@@ -6,10 +6,10 @@ extracting tags while handling comments and CDATA sections.
 
 import re
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import TextFormatParser
 
 
-class XMLParser(BaseFormatParser):
+class XMLParser(TextFormatParser):
     """Parser for XML documents that validates structure using nested tags.
 
     Attributes:
@@ -51,6 +51,17 @@ class XMLParser(BaseFormatParser):
             tuple: representation of parser state.
         """
         return (self.in_cdata, self.in_comment, self.is_corrupted)
+
+    def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
+        """Checks if a candidate cluster contains XML tag opening brackets.
+
+        Args:
+            candidate_cluster (bytes): Raw candidate cluster.
+
+        Returns:
+            bool: True if an opening tag bracket is present.
+        """
+        return b'<' in candidate_cluster
 
     @property
     def header_signatures(self) -> List[bytes]:

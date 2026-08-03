@@ -5,10 +5,10 @@ streams by checking opening and closing brace structures while handling escaped 
 """
 
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import TextFormatParser
 
 
-class RTFParser(BaseFormatParser):
+class RTFParser(TextFormatParser):
     """Parser for RTF documents that tracks brace balancing.
 
     Attributes:
@@ -45,6 +45,17 @@ class RTFParser(BaseFormatParser):
         """
         return (self.escape, self.is_corrupted)
 
+    def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
+        """Checks if a candidate cluster contains RTF brace tokens.
+
+        Args:
+            candidate_cluster (bytes): Raw candidate cluster.
+
+        Returns:
+            bool: True if RTF structural characters are present.
+        """
+        return any(c in candidate_cluster for c in [b'{', b'}', b'\\'])
+
     @property
     def header_signatures(self) -> List[bytes]:
         """Gets the list of header signature bytes.
@@ -64,7 +75,7 @@ class RTFParser(BaseFormatParser):
         return [b'}']
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
-        """Extracts brace structural tags, skipping escaped braces and control codes.
+        """Extracts brace structural tags in a single pass, skipping escaped braces and control codes.
 
         Args:
             data (bytes): Input data block cluster to parse.
@@ -74,17 +85,18 @@ class RTFParser(BaseFormatParser):
                 last processed byte offset.
         """
         tags = []
-        
-        # check for binary control bytes (strictly illegal in RTF)
-        for b in data:
-            if b < 32 and b not in (9, 10, 13):
+        last_offset = 0
+
+        for i, byte_val in enumerate(data):
+            # check for binary control bytes (strictly illegal in RTF)
+            if byte_val < 32 and byte_val not in (9, 10, 13):
                 self.is_corrupted = True
                 return [], 0
-        last_offset = 0
-        for i, byte_val in enumerate(data):
+
             if self.escape:
                 self.escape = False
                 continue
+
             if byte_val == ord('\\'):
                 self.escape = True
             elif byte_val == ord('{'):
@@ -93,4 +105,5 @@ class RTFParser(BaseFormatParser):
             elif byte_val == ord('}'):
                 tags.append(('{', True))
                 last_offset = i + 1
+
         return tags, last_offset

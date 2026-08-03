@@ -6,10 +6,10 @@ length tags, and object delimiters, supporting gap-jumping over non-PDF clusters
 
 import re
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import BaseBinaryParser
 
 
-class PDFParser(BaseFormatParser):
+class PDFParser(BaseBinaryParser):
     """Parser for PDF documents that tracks stream lengths and PDF markers.
 
     Attributes:
@@ -51,6 +51,11 @@ class PDFParser(BaseFormatParser):
         self.pending_endstream = False
         self.pending_bytes_needed = 0
         self.header_verified = False
+
+    def prepare_for_gap_jump(self) -> None:
+        """Resets mid-stream search flags so candidate clusters are tested from a clean boundary."""
+        self.pending_endstream = False
+        self.pending_bytes_needed = 0
 
     def state_tuple(self) -> tuple:
         """Returns a representation of the parser state for caching.

@@ -5,10 +5,10 @@ binary file formats dynamically using specified header and footer signatures.
 """
 
 from typing import List, Tuple
-from .base import BaseFormatParser
+from .base import BaseBinaryParser
 
 
-class DynamicBinaryParser(BaseFormatParser):
+class DynamicBinaryParser(BaseBinaryParser):
     """A parser for simple linear binary formats defined dynamically.
 
     Attributes:

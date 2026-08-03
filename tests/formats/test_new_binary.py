@@ -26,7 +26,7 @@ class TestNewBinaryParsers(unittest.TestCase):
     """Test suite for NewBinaryParsers parsing and carving."""
 
     def test_pcx_parser(self):
-        """Tests that pcx parser."""
+        """Verify PCX image parser extracts valid header, RLE stream, and palette."""
         parser = PCXParser()
         # build 128-byte PCX Header
         # width: XMax - XMin + 1 = 9 - 0 + 1 = 10
@@ -56,7 +56,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data))
 
     def test_wav_parser(self):
-        """Tests that wav parser."""
+        """Verify RIFF WAV parser parses chunk size and advances over subchunks."""
         parser = WAVParser()
         # RIFF size = 4 (for 'WAVE') + 8 (for subchunk) + 12 (data) = 24
         data = b'RIFF' + struct.pack('<I', 24) + b'WAVE' + b'subc' + struct.pack('<I', 12) + b'123456789012'
@@ -66,7 +66,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 32) # RIFF + size + rest (8 + 24)
 
     def test_mp3_parser(self):
-        """Tests that mp3 parser."""
+        """Verify MP3 parser handles ID3 headers, frame sync headers, and ID3v1 tags."""
         parser = MP3Parser()
         # ID3 header: 'ID3', version (2), flags (1), size (4 synchsafe)
         # size = 10 bytes
@@ -85,7 +85,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data))
 
     def test_au_parser(self):
-        """Tests that au parser."""
+        """Verify Sun/NeXT AU audio file parsing and size calculation."""
         parser = AUParser()
         # header: magic (4), data_offset (4), data_size (4)
         data = b'.snd' + struct.pack('>II', 24, 10) + b'\x00' * 12 + b'1234567890'
@@ -95,7 +95,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 34)
 
     def test_asf_wma_wmv_parser(self):
-        """Tests that asf wma wmv parser."""
+        """Verify ASF container parsing differentiates WMA audio and WMV video streams."""
         wma = WMAParser()
         wmv = WMVParser()
 
@@ -142,7 +142,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv3, 1000)
 
     def test_avi_parser(self):
-        """Tests that avi parser."""
+        """Verify RIFF AVI video container header and chunk parsing."""
         parser = AVIParser()
         data = b'RIFF' + struct.pack('<I', 20) + b'AVI ' + b'\x00' * 20
         is_corr, is_comp, adv, rem = parser.analyze_binary(data)
@@ -151,7 +151,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 28)
 
     def test_mp4_mov_parser(self):
-        """Tests that mp4 mov parser."""
+        """Verify ISO base media file format (MP4/MOV) box parsing."""
         mp4 = MP4Parser()
         mov = MOVParser()
 
@@ -177,7 +177,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 40)
 
     def test_flv_parser(self):
-        """Tests that flv parser."""
+        """Verify Flash Video container parses tags and previous tag size offsets."""
         parser = FLVParser()
         # header: FLV\x01, Flags (5), Header size (9)
         hdr = b'FLV\x01\x05\x00\x00\x00\x09'
@@ -197,7 +197,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data) - 1)
 
     def test_mpg_parser(self):
-        """Tests that mpg parser."""
+        """Verify MPEG program stream parsing from start pack header to program end code."""
         parser = MPGParser()
         # starts with \x00\x00\x01\xBA, contains some bytes, ends with \x00\x00\x01\xB9
         data = b'\x00\x00\x01\xBA' + b'\x00' * 50 + b'\x00\x00\x01\xB9'
@@ -207,7 +207,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data))
 
     def test_seven_z_parser(self):
-        """Tests that seven z parser."""
+        """Verify 7-Zip archive parser reads header offsets and size descriptors."""
         parser = SevenZParser()
         # header: signature (6), version (2), CRC (4), next_header_offset (8), next_header_size (8), CRC (4)
         # size = 32
@@ -220,7 +220,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 47) # 32 + 10 + 5
 
     def test_rar_parser(self):
-        """Tests that rar parser."""
+        """Verify RAR archive parser navigates block headers to archive termination."""
         parser = RARParser()
         # RAR4: Rar!\x1a\x07\x00
         # block 1 (Archive Header): CRC (2), Type (0x73), Flags (0), Size (7)
@@ -235,7 +235,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data))
 
     def test_gz_parser(self):
-        """Tests that gz parser."""
+        """Verify GZIP archive parser decompresses DEFLATE streams and discards trailing bytes."""
         parser = GZParser()
         # compress simple string
         raw_data = b"Hello, GZIP parser test!"
@@ -250,7 +250,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(gz_bytes))
 
     def test_bz2_parser(self):
-        """Tests that bz2 parser."""
+        """Verify BZIP2 archive parser processes block sequences and stops at archive boundary."""
         parser = BZ2Parser()
         raw_data = b"Hello, BZIP2 parser test!"
         bz2_bytes = bz2.compress(raw_data)
@@ -262,7 +262,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(bz2_bytes))
 
     def test_tar_parser(self):
-        """Tests that tar parser."""
+        """Verify POSIX TAR archive parser processes 512-byte header blocks and null terminator blocks."""
         parser = TARParser()
         # header block (512 bytes): ustar at 257, size (8) at 124
         header = bytearray(512)
@@ -280,7 +280,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data))
 
     def test_wim_parser(self):
-        """Tests that wim parser."""
+        """Verify Windows Imaging (WIM) header parsing and XML descriptor boundary detection."""
         parser = WIMParser()
         # WIM Header (120 bytes)
         # signature: MSWIM\x00\x00\x00
@@ -305,7 +305,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 1300)
 
     def test_flv_parser_invalid_tag_rejection(self):
-        """Tests that flv parser invalid tag rejection."""
+        """Verify FLV parser terminates carving upon encountering an unexpected tag type."""
         parser = FLVParser()
         hdr = b'FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00' # header + PrevTagSize0
         tag1_hdr = b'\x08\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00' # audio Tag
@@ -320,7 +320,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, len(data) - 1)  # completes at end of tag1
 
     def test_mp4_parser_trailing_zeros(self):
-        """Tests that mp4 parser trailing zeros."""
+        """Verify MP4 parser cleanly terminates on short trailing padding bytes."""
         mp4 = MP4Parser()
         ftyp = struct.pack('>I', 16) + b'ftyp' + b'12345678'
         zeros = b'\x00\x00\x00'  # short zero padding (less than 8 bytes)
@@ -332,7 +332,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         self.assertEqual(adv, 16)  # completes exactly after ftyp box
 
     def test_jpg_parser_strict_header(self):
-        """Tests that jpg parser strict header."""
+        """Verify strict JPEG SOI and subsequent marker byte validation."""
         from struct_carver.formats.binary.jpg_parser import JPGParser
         parser = JPGParser()
         

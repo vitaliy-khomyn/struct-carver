@@ -4,12 +4,11 @@ This module provides the JSONParser class, which parses JSON documents
 by extracting structural braces and brackets while safely skipping escaped strings.
 """
 
-import re
 from typing import List, Tuple
-from ..base import BaseFormatParser
+from ..base import TextFormatParser
 
 
-class JSONParser(BaseFormatParser):
+class JSONParser(TextFormatParser):
     """Parser for JSON documents that tracks bracket and brace balancing.
 
     Attributes:
@@ -20,15 +19,6 @@ class JSONParser(BaseFormatParser):
 
     def __init__(self):
         """Initializes the JSON parser state."""
-        self.tag_pattern = re.compile(rb'([\{\}\[\]])')
-
-        self.tag_map = {
-            b'{': ('{', False),
-            b'}': ('{', True),
-            b'[': ('[', False),
-            b']': ('[', True)
-        }
-
         self.in_string = False
         self.escape_next = False
         self.is_corrupted = False
@@ -58,6 +48,17 @@ class JSONParser(BaseFormatParser):
             tuple: representation of parser state.
         """
         return (self.in_string, self.escape_next, self.is_corrupted)
+
+    def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
+        """Checks if a candidate cluster contains JSON structure delimiter characters.
+
+        Args:
+            candidate_cluster (bytes): Raw candidate cluster.
+
+        Returns:
+            bool: True if JSON structure characters are detected.
+        """
+        return any(c in candidate_cluster for c in [b'{', b'}', b'[', b']', b'\\'])
 
     @property
     def header_signatures(self) -> List[bytes]:
