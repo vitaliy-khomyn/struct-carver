@@ -97,6 +97,32 @@ class TextFormatParser(BaseFormatParser):
 
     engine_type: str = "semantic"
 
+    @staticmethod
+    def is_illegal_control_byte(b: int) -> bool:
+        """Checks whether a single byte is an illegal control character in text streams.
+
+        Bytes < 32 except tab (9), line feed (10), and carriage return (13) are illegal.
+
+        Args:
+            b (int): Byte integer value (0-255).
+
+        Returns:
+            bool: True if the byte is an illegal control character.
+        """
+        return b < 32 and b not in (9, 10, 13)
+
+    @classmethod
+    def has_illegal_control_bytes(cls, data: bytes) -> bool:
+        """Checks if the byte sequence contains any illegal control characters.
+
+        Args:
+            data (bytes): Input byte buffer.
+
+        Returns:
+            bool: True if any illegal control byte is found.
+        """
+        return any(b < 32 and b not in (9, 10, 13) for b in data)
+
     @abstractmethod
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         """Extracts structural tags or bracket tokens from textual data chunks.
@@ -109,6 +135,28 @@ class TextFormatParser(BaseFormatParser):
                 and the last processed byte offset.
         """
         pass
+
+
+class BaseMarkupParser(TextFormatParser):
+    """Base class for tag-based markup formats (HTML and XML)."""
+
+    def __init__(self):
+        """Initializes markup parser common state."""
+        import re
+        self.tag_pattern = re.compile(rb'<(/?)(\w+)([^>]*)>')
+        self.in_comment = False
+        self.is_corrupted = False
+
+    def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
+        """Checks if a candidate cluster contains tag opening brackets.
+
+        Args:
+            candidate_cluster (bytes): Raw candidate cluster.
+
+        Returns:
+            bool: True if an opening bracket is present.
+        """
+        return b'<' in candidate_cluster
 
 
 class BaseBinaryParser(BaseFormatParser):

@@ -33,6 +33,23 @@ def generate_dashboard(json_path: str, output_html: str):
 
     files = report.get("files", [])
 
+    source_img = report.get("source_image", {})
+    img_chain_card = ""
+    if source_img:
+        img_sha256 = source_img.get("sha256", "N/A")
+        img_md5 = source_img.get("md5", "N/A")
+        img_path = source_img.get("image_path", "N/A")
+        img_chain_card = f"""
+        <div class="chain-box">
+            <h4>Forensic Chain of Custody & Image Integrity</h4>
+            <div class="chain-grid">
+                <div><strong>Source Image:</strong> <code>{img_path}</code></div>
+                <div><strong>SHA-256:</strong> <code class="hash-code">{img_sha256}</code></div>
+                <div><strong>MD5:</strong> <code class="hash-code">{img_md5}</code></div>
+            </div>
+        </div>
+        """
+
     total_files = len(files)
     complete_files = sum(1 for f in files if f.get("status") == "complete")
     partial_files = sum(1 for f in files if f.get("status") == "partial")
@@ -48,6 +65,28 @@ def generate_dashboard(json_path: str, output_html: str):
         status = f.get("status", "unknown")
         total_size = f.get("total_size", 0)
         fragments = f.get("fragments", [])
+        start_lba = f.get("start_lba", fragments[0]["start_offset"] // 512 if fragments else 0)
+        slack_bytes = f.get("slack_bytes", 0)
+        entropy = f.get("entropy")
+        metadata = f.get("metadata", {})
+
+        if entropy is not None:
+            if entropy < 4.0:
+                entropy_badge = f"<span class='entropy-badge ent-low' title='Low entropy (plain text / zeros)'>{entropy:.2f}</span>"
+            elif entropy < 7.2:
+                entropy_badge = f"<span class='entropy-badge ent-mid' title='Moderate entropy (structured data)'>{entropy:.2f}</span>"
+            else:
+                entropy_badge = f"<span class='entropy-badge ent-high' title='High entropy (compressed/encrypted)'>{entropy:.2f}</span>"
+        else:
+            entropy_badge = "<span class='text-muted'>-</span>"
+
+        if metadata:
+            meta_items = [f"<strong>{k}:</strong> {v}" for k, v in metadata.items()]
+            meta_display = "<br>".join(meta_items[:3])
+            if len(meta_items) > 3:
+                meta_display += f"<br><small>+{len(meta_items) - 3} more</small>"
+        else:
+            meta_display = "<span class='text-muted'>None</span>"
 
         val_info = f.get("validation", {})
         is_valid = val_info.get("is_valid")
@@ -113,12 +152,15 @@ def generate_dashboard(json_path: str, output_html: str):
             <td>{filename}</td>
             <td><span class="format-badge">{file_format.upper()}</span></td>
             <td><span class="status-badge status-{status}">{status.capitalize()}</span></td>
+            <td><code>LBA #{start_lba}</code></td>
+            <td>{total_size:,} B <br><small class="text-muted">Slack: {slack_bytes} B</small></td>
+            <td>{entropy_badge}</td>
             <td>{val_badge}</td>
             <td>{hash_display}</td>
-            <td>{total_size:,}</td>
+            <td><small>{meta_display}</small></td>
             <td>
                 <details>
-                    <summary>{len(fragments)} Fragment(s)</summary>
+                    <summary>{len(fragments)} Frag(s)</summary>
                     <div class="frag-details">{frag_text}</div>
                 </details>
             </td>
@@ -128,115 +170,30 @@ def generate_dashboard(json_path: str, output_html: str):
         </tr>
         """
 
-    html_template = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Struct Carver! Forensic Dashboard</title>
-    <style>
-        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; }}
-        h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
-        .summary-cards {{ display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }}
-        .card {{ background: #fff; padding: 15px 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); flex: 1; min-width: 150px; text-align: center; }}
-        .card h3 {{ margin: 0; font-size: 24px; color: #2c3e50; }}
-        .card p {{ margin: 5px 0 0; color: #7f8c8d; text-transform: uppercase; font-size: 11px; font-weight: bold; }}
-        .controls {{ margin-bottom: 15px; display: flex; gap: 8px; flex-wrap: wrap; }}
-        button {{ padding: 8px 14px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: opacity 0.3s; font-size: 12px; }}
-        button:hover {{ opacity: 0.8; }}
-        .btn-all {{ background: #95a5a6; color: white; }}
-        .btn-complete {{ background: #2ecc71; color: white; }}
-        .btn-partial {{ background: #f39c12; color: white; }}
-        .btn-incomplete {{ background: #e74c3c; color: white; }}
-        .btn-valid {{ background: #16a085; color: white; }}
-        .btn-corrupt {{ background: #c0392b; color: white; }}
-        table {{ width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }}
-        th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid #ddd; font-size: 13px; }}
-        th {{ background-color: #34495e; color: white; font-weight: 600; }}
-        tr:hover {{ background-color: #f1f2f6; }}
-        .format-badge {{ background: #3498db; color: white; padding: 3px 6px; border-radius: 10px; font-size: 11px; font-weight: bold; }}
-        .status-badge {{ padding: 3px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; }}
-        .status-complete {{ background-color: #2ecc71; }}
-        .status-partial {{ background-color: #f39c12; }}
-        .status-incomplete_eof {{ background-color: #e74c3c; }}
-        .val-badge {{ padding: 3px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; display: inline-block; }}
-        .val-valid {{ background-color: #16a085; color: white; }}
-        .val-corrupt {{ background-color: #c0392b; color: white; }}
-        .val-na {{ background-color: #bdc3c7; color: #2c3e50; }}
-        .algo-tag {{ background: #34495e; color: #ecf0f1; font-size: 9px; padding: 1px 4px; border-radius: 3px; vertical-align: middle; }}
-        .hash-code {{ font-size: 11px; font-family: monospace; }}
-        details {{ cursor: pointer; }}
-        .frag-details {{ margin-top: 5px; font-size: 11px; background: #ecf0f1; padding: 6px; border-radius: 4px; }}
-        code {{ background: #dfe6e9; padding: 2px 4px; border-radius: 3px; font-family: monospace; }}
-        .frag-track {{ position: relative; width: 120px; height: 10px; background-color: #dfe6e9; border-radius: 5px; overflow: hidden; display: inline-block; }}
-        .frag-segment {{ position: absolute; height: 100%; transition: transform 0.1s; cursor: pointer; }}
-        .frag-segment:hover {{ transform: scaleY(1.3); }}
-        .segment-normal {{ background-color: #3498db; }}
-        .segment-partial {{ background-color: #f39c12; }}
-        .segment-incomplete {{ background-color: #e74c3c; }}
-    </style>
-</head>
-<body>
+    # load external HTML template
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "dashboard.html")
+    if os.path.exists(template_path):
+        with open(template_path, 'r', encoding='utf-8') as f_tpl:
+            template_str = f_tpl.read()
+    else:
+        logger.error(f"HTML dashboard template not found at '{template_path}'.")
+        return
 
-    <h1>Struct Carver! Forensic Dashboard</h1>
-    <div class="summary-cards">
-        <div class="card"><h3>{total_files}</h3><p>Total Files Extracted</p></div>
-        <div class="card" style="border-bottom: 4px solid #2ecc71;"><h3>{complete_files}</h3><p>Complete Recoveries</p></div>
-        <div class="card" style="border-bottom: 4px solid #f39c12;"><h3>{partial_files}</h3><p>Partial Recoveries</p></div>
-        <div class="card" style="border-bottom: 4px solid #e74c3c;"><h3>{incomplete_files}</h3><p>Incomplete (EOF)</p></div>
-        <div class="card" style="border-bottom: 4px solid #16a085;"><h3>{valid_files}</h3><p>Verified Intact</p></div>
-        <div class="card" style="border-bottom: 4px solid #c0392b;"><h3>{corrupt_files}</h3><p>Corrupted Payload</p></div>
-    </div>
-    <div class="controls">
-        <button class="btn-all" onclick="filterTable('all')">Show All</button>
-        <button class="btn-complete" onclick="filterTable('status-complete')">Complete Only</button>
-        <button class="btn-partial" onclick="filterTable('status-partial')">Partial Only</button>
-        <button class="btn-incomplete" onclick="filterTable('status-incomplete_eof')">Incomplete Only</button>
-        <button class="btn-valid" onclick="filterTable('val-is-valid')">Verified Only</button>
-        <button class="btn-corrupt" onclick="filterTable('val-is-corrupt')">Corrupted Only</button>
-    </div>
-
-    <table id="reportTable">
-        <thead>
-            <tr>
-                <th>File ID</th>
-                <th>Filename</th>
-                <th>Format</th>
-                <th>Status</th>
-                <th>Validation</th>
-                <th>Forensic Hash</th>
-                <th>Size (Bytes)</th>
-                <th>Fragments Map</th>
-                <th>Visual Blocks</th>
-            </tr>
-        </thead>
-        <tbody>
-            {rows_html}
-        </tbody>
-    </table>
-
-    <script>
-        function filterTable(filterClass) {{
-            const rows = document.querySelectorAll('#reportTable tbody tr');
-            rows.forEach(row => {{
-                if (filterClass === 'all') {{
-                    row.style.display = '';
-                }} else {{
-                    if (row.classList.contains(filterClass)) {{
-                        row.style.display = '';
-                    }} else {{
-                        row.style.display = 'none';
-                    }}
-                }}
-            }});
-        }}
-    </script>
-</body>
-</html>
-"""
+    # substitute template variables
+    rendered_html = (
+        template_str
+        .replace("{{img_chain_card}}", img_chain_card)
+        .replace("{{total_files}}", str(total_files))
+        .replace("{{complete_files}}", str(complete_files))
+        .replace("{{partial_files}}", str(partial_files))
+        .replace("{{incomplete_files}}", str(incomplete_files))
+        .replace("{{valid_files}}", str(valid_files))
+        .replace("{{corrupt_files}}", str(corrupt_files))
+        .replace("{{rows_html}}", rows_html)
+    )
 
     with open(output_html, 'w', encoding='utf-8') as f:
-        f.write(html_template)
+        f.write(rendered_html)
 
     logger.info(f"Dashboard successfully generated at: {output_html}")
 

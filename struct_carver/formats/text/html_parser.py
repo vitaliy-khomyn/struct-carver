@@ -4,12 +4,11 @@ This module provides the HTMLParser class, which parses HTML document streams,
 extracting semantic tag structures while ignoring void elements and comments.
 """
 
-import re
 from typing import List, Tuple
-from ..base import TextFormatParser
+from ..base import BaseMarkupParser
 
 
-class HTMLParser(TextFormatParser):
+class HTMLParser(BaseMarkupParser):
     """Parser for HTML documents that checks tag balancing using a tag stack.
 
     Attributes:
@@ -20,16 +19,12 @@ class HTMLParser(TextFormatParser):
 
     def __init__(self):
         """Initializes the HTML parser state and signature patterns."""
-        self.tag_pattern = re.compile(rb'<(/?)(\w+)([^>]*)>')
-
+        super().__init__()
         # html void elements that never have closing tags
         self.void_elements = {
             b'area', b'base', b'br', b'col', b'embed', b'hr', b'img', b'input',
             b'link', b'meta', b'param', b'source', b'track', b'wbr', b'!doctype'
         }
-
-        self.in_comment = False
-        self.is_corrupted = False
 
     def clone(self) -> 'HTMLParser':
         """Creates a clone of the parser with the current state.
@@ -44,27 +39,15 @@ class HTMLParser(TextFormatParser):
 
     def reset(self):
         """Resets the parser state back to initial default values."""
-        self.in_comment = False
-        self.is_corrupted = False
+        super().reset()
 
     def state_tuple(self) -> tuple:
         """Returns a hashable tuple representing the internal parser state.
 
         Returns:
-            tuple: representation of parser state.
+            tuple: Representation of parser state.
         """
         return (self.in_comment, self.is_corrupted)
-
-    def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
-        """Checks if a candidate cluster contains HTML tag opening brackets.
-
-        Args:
-            candidate_cluster (bytes): Raw candidate cluster.
-
-        Returns:
-            bool: True if an opening tag bracket is present.
-        """
-        return b'<' in candidate_cluster
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -95,12 +78,11 @@ class HTMLParser(TextFormatParser):
                 last processed byte offset in the block.
         """
         tags = []
-        
+
         # check for binary control bytes (strictly illegal in HTML text contexts)
-        for b in data:
-            if b < 32 and b not in (9, 10, 13):
-                self.is_corrupted = True
-                return [], 0
+        if self.has_illegal_control_bytes(data):
+            self.is_corrupted = True
+            return [], 0
 
         i = 0
         last_offset = 0

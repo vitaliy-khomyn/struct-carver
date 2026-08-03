@@ -15,6 +15,8 @@ from struct_carver.core.post_processor import PostProcessor
 from struct_carver.core.hasher import CryptoHasher
 from struct_carver.core.validator import FileValidator
 from struct_carver.core.checkpoint import CheckpointManager
+from struct_carver.core.entropy import calculate_file_entropy
+from struct_carver.core.metadata import MetadataExtractor
 from struct_carver.formats.registry import ParserRegistry
 from struct_carver.logger import setup_logger
 
@@ -147,15 +149,14 @@ class Carver:
         return self.post_processor.post_process(file_path, ext, output_dir, filename, logger)
 
     def _hash_fragments(self, image_path: str, fragments: List[Dict[str, Any]]) -> None:
-        """Computes fragment-level cryptographic hashes if a hasher is configured."""
+        """Computes fragment-level cryptographic hashes streamingly if a hasher is configured."""
         if not self.hasher or not os.path.exists(image_path):
             return
         try:
-            with open(image_path, "rb") as f_img:
-                for frag in fragments:
-                    f_img.seek(frag["start_offset"])
-                    data = f_img.read(frag["size"])
-                    frag["fragment_hash"] = self.hasher.hash_bytes(data)
+            for frag in fragments:
+                frag["fragment_hash"] = self.hasher.hash_file_range(
+                    image_path, frag["start_offset"], frag["size"]
+                )
         except Exception:
             pass
 
@@ -171,16 +172,30 @@ class Carver:
         worker_id: int,
         current_offset: int,
     ) -> Dict[str, Any]:
-        """Builds a forensic file record with hashes, fragment hashes, and validation results."""
+        """Builds a forensic file record with hashes, fragment hashes, LBA, slack, entropy, and metadata."""
         self._hash_fragments(image_path, fragments)
+        total_size = sum(f["size"] for f in fragments)
+        first_offset = fragments[0]["start_offset"] if fragments else 0
+        start_lba = first_offset // 512
+        slack_bytes = (self.cluster_size - (total_size % self.cluster_size)) % self.cluster_size
+
         record: Dict[str, Any] = {
             "file_id": file_id,
             "filename": filename,
             "format": fmt,
             "status": status,
             "fragments": fragments,
-            "total_size": sum(f["size"] for f in fragments)
+            "total_size": total_size,
+            "start_lba": start_lba,
+            "slack_bytes": slack_bytes,
         }
+
+        if os.path.exists(file_path):
+            record["entropy"] = calculate_file_entropy(file_path)
+            meta = MetadataExtractor.extract(file_path, fmt)
+            if meta:
+                record["metadata"] = meta
+
         if self.hasher:
             record["hash_algo"] = self.hasher.algo_name
             record["file_hash"] = self.hasher.hash_file(file_path)
@@ -189,6 +204,211 @@ class Carver:
         if self.checkpoint_mgr:
             self.checkpoint_mgr.save_worker_progress(worker_id, current_offset, [record])
         return record
+
+    def _write_gap_fill(self, current_file_handle: Any, gap_bytes: int, logger: Any) -> None:
+        """Fills an inter-fragment gap with zeros up to max_gap_fill_bytes.
+
+        Args:
+            current_file_handle (Any): Open file handle to the carved file.
+            gap_bytes (int): Total gap size in bytes.
+            logger (Any): Active worker logger instance.
+        """
+        if gap_bytes <= 0 or not current_file_handle:
+            return
+        fill_remaining = gap_bytes
+        if self.max_gap_fill_bytes > 0 and gap_bytes > self.max_gap_fill_bytes:
+            logger.warning(
+                f"Gap size ({gap_bytes} bytes) exceeds max_gap_fill_bytes "
+                f"({self.max_gap_fill_bytes} bytes). Capping zero-fill."
+            )
+            fill_remaining = self.max_gap_fill_bytes
+
+        # stream zeros in chunks to ensure low constant memory consumption
+        chunk_size = min(fill_remaining, 1024 * 1024)
+        zero_chunk = b'\x00' * chunk_size
+        while fill_remaining > 0:
+            to_write = min(fill_remaining, len(zero_chunk))
+            current_file_handle.write(zero_chunk[:to_write])
+            fill_remaining -= to_write
+
+    def _handle_false_positive(
+        self,
+        output_dir: str,
+        current_filename: str,
+        current_file_handle: Any,
+        f: Any,
+        phys_start: int,
+        best_idx: int,
+        prev_overlap: bytes,
+        raw_cluster: bytes,
+        overlap_size: int,
+    ) -> bytes:
+        """Cleans up resources and repositions stream upon encountering a false positive signature.
+
+        Args:
+            output_dir (str): Output directory path.
+            current_filename (str): Active output filename on disk.
+            current_file_handle (Any): Open file handle to close.
+            f (Any): File reader stream.
+            phys_start (int): Start offset of current cluster.
+            best_idx (int): Relative index of false signature.
+            prev_overlap (bytes): Preceding buffer overlap.
+            raw_cluster (bytes): Unmodified cluster bytes.
+            overlap_size (int): Max signature overlap window.
+
+        Returns:
+            bytes: Updated prev_overlap for the next scan cycle.
+        """
+        if current_file_handle:
+            current_file_handle.close()
+            old_path = os.path.join(output_dir, current_filename)
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+
+        overlap_len_orig = len(prev_overlap)
+        sig_in_cluster = best_idx - overlap_len_orig
+        if sig_in_cluster >= 0:
+            next_scan = phys_start + sig_in_cluster + 1
+            f.seek(next_scan)
+            pre_sig = raw_cluster[:sig_in_cluster]
+            return pre_sig[-overlap_size:] if overlap_size > 0 else b""
+        else:
+            return raw_cluster[-overlap_size:] if overlap_size > 0 else b""
+
+    def _finalize_partial_file(
+        self,
+        image_path: str,
+        output_dir: str,
+        current_filename: str,
+        current_file_handle: Any,
+        file_id: int,
+        current_ext: str,
+        fragments: List[Dict[str, Any]],
+        worker_id: int,
+        current_offset: int,
+        status: str = "partial",
+    ) -> Dict[str, Any]:
+        """Closes handle, renames file with partial suffix, and builds forensic record.
+
+        Args:
+            image_path (str): Source disk image path.
+            output_dir (str): Destination directory.
+            current_filename (str): Active file name.
+            current_file_handle (Any): Open file handle.
+            file_id (int): Numerical file ID.
+            current_ext (str): File extension.
+            fragments (List[Dict[str, Any]]): Recorded fragments.
+            worker_id (int): Worker thread identifier.
+            current_offset (int): Current stream offset.
+            status (str, optional): Recovery status ("partial" or "incomplete_eof").
+
+        Returns:
+            Dict[str, Any]: Forensic file record.
+        """
+        if current_file_handle and not current_file_handle.closed:
+            current_file_handle.close()
+
+        old_path = os.path.join(output_dir, current_filename)
+        new_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
+        new_path = os.path.join(output_dir, new_filename)
+        if os.path.exists(old_path):
+            try:
+                os.rename(old_path, new_path)
+            except OSError:
+                new_path = old_path
+                new_filename = current_filename
+
+        return self._finalize_file_record(
+            image_path=image_path,
+            file_path=new_path,
+            file_id=file_id,
+            filename=new_filename,
+            fmt=current_ext,
+            status=status,
+            fragments=fragments,
+            worker_id=worker_id,
+            current_offset=current_offset,
+        )
+
+    def _handle_file_completion(
+        self,
+        image_path: str,
+        output_dir: str,
+        current_filename: str,
+        current_file_handle: Any,
+        file_id: int,
+        current_ext: str,
+        fragments: List[Dict[str, Any]],
+        worker_id: int,
+        cluster_to_write: bytes,
+        bytes_to_advance: int,
+        f: Any,
+        overlap_size: int,
+        logger: Any,
+    ) -> Tuple[Dict[str, Any], bytes]:
+        """Finalizes a successfully carved file, triggers post-processing, and rewinds stream.
+
+        Args:
+            image_path (str): Source disk image path.
+            output_dir (str): Destination directory.
+            current_filename (str): File name on disk.
+            current_file_handle (Any): Open file handle.
+            file_id (int): Numerical file ID.
+            current_ext (str): File extension.
+            fragments (List[Dict[str, Any]]): Recorded fragments.
+            worker_id (int): Worker thread identifier.
+            cluster_to_write (bytes): Valid cluster data block.
+            bytes_to_advance (int): Valid bytes to keep from cluster.
+            f (Any): Stream reader source.
+            overlap_size (int): Max signature overlap window.
+            logger (Any): Active logger.
+
+        Returns:
+            Tuple[Dict[str, Any], bytes]: Final file record and updated prev_overlap buffer.
+        """
+        logger.info(f"Successfully carved file {file_id}!")
+        write_len = max(0, bytes_to_advance)
+
+        discarded_bytes = len(cluster_to_write) - write_len
+        fragments[-1]["end_offset"] -= discarded_bytes
+        fragments[-1]["size"] -= discarded_bytes
+
+        if current_file_handle:
+            current_file_handle.write(cluster_to_write[:write_len])
+            current_file_handle.close()
+
+        # trigger post-processing routines
+        carved_file_path = os.path.join(output_dir, current_filename)
+        new_ext, new_filename = self._post_process_file(carved_file_path, current_ext, output_dir, current_filename, logger)
+        final_path = os.path.join(output_dir, new_filename)
+
+        record = self._finalize_file_record(
+            image_path=image_path,
+            file_path=final_path,
+            file_id=file_id,
+            filename=new_filename,
+            fmt=new_ext,
+            status="complete",
+            fragments=fragments,
+            worker_id=worker_id,
+            current_offset=f.tell(),
+        )
+
+        # if the completed file ended before the end of the cluster buffer,
+        # rewind stream to exact file termination offset so remaining bytes
+        # in the cluster are scanned immediately for subsequent file headers.
+        if discarded_bytes > 0:
+            final_phys_end = fragments[-1]["end_offset"]
+            f.seek(final_phys_end)
+            completed_bytes = cluster_to_write[:write_len]
+            prev_overlap = completed_bytes[-overlap_size:] if overlap_size > 0 else b""
+        else:
+            prev_overlap = cluster_to_write[-overlap_size:] if overlap_size > 0 else b""
+
+        return record, prev_overlap
 
     def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: Optional[int] = None, worker_id: int = 0):
         """Carves supported files out of the raw forensic image file stream.
@@ -299,32 +519,18 @@ class Carver:
                                     # discard false positive signature match immediately
                                     carving = False
                                     active_parser = None
-                                    if current_file_handle:
-                                        current_file_handle.close()
-                                        current_file_handle = None
-                                        old_path = os.path.join(output_dir, current_filename)
-                                        if os.path.exists(old_path):
-                                            os.remove(old_path)
-
-                                    # seek to the byte right after the false signature's position
-                                    # in the current cluster so the bytes that follow it are still
-                                    # scanned for real headers. best_idx is relative to
-                                    # (orig_prev_overlap + raw_cluster), so we subtract the
-                                    # overlap length to find the offset within raw_cluster.
-                                    overlap_len_orig = len(prev_overlap)
-                                    sig_in_cluster = best_idx - overlap_len_orig
-                                    if sig_in_cluster >= 0:
-                                        # false sig is inside the current cluster; seek past it.
-                                        next_scan = phys_start + sig_in_cluster + 1
-                                        f.seek(next_scan)
-                                        # prev_overlap covers the bytes just before the false sig
-                                        # so any header straddling the new read boundary is caught.
-                                        pre_sig = raw_cluster[:sig_in_cluster]
-                                        prev_overlap = pre_sig[-overlap_size:] if overlap_size > 0 else b""
-                                    else:
-                                        # false sig was in the previous-cluster overlap area;
-                                        # just continue from the next full cluster naturally.
-                                        prev_overlap = raw_cluster[-overlap_size:] if overlap_size > 0 else b""
+                                    prev_overlap = self._handle_false_positive(
+                                        output_dir=output_dir,
+                                        current_filename=current_filename,
+                                        current_file_handle=current_file_handle,
+                                        f=f,
+                                        phys_start=phys_start,
+                                        best_idx=best_idx,
+                                        prev_overlap=prev_overlap,
+                                        raw_cluster=raw_cluster,
+                                        overlap_size=overlap_size,
+                                    )
+                                    current_file_handle = None
                                     continue
 
                                 found, new_engine, new_parser, tags, new_overlap, bytes_to_advance, candidate_cluster, cand_start, cand_end = self._attempt_gap_jump(
@@ -337,56 +543,26 @@ class Carver:
                                     cluster_to_write = candidate_cluster
                                     parser_is_binary = getattr(active_parser, 'engine_type', 'semantic') == 'binary'
                                     if parser_is_binary:
-                                        # for binary formats the corrupted cluster is part of the
-                                        # file (e.g. last stream bytes of Fragment 1). writing it
-                                        # preserves internal byte offsets (PDF xref tables, etc.).
                                         if current_file_handle:
                                             current_file_handle.write(cluster)
-                                        # zero-fill the true inter-fragment gap so that subsequent
-                                        # byte offsets in the carved file remain correct.
-                                        gap_bytes = cand_start - phys_end
-                                        if gap_bytes > 0 and current_file_handle:
-                                            fill_remaining = gap_bytes
-                                            if self.max_gap_fill_bytes > 0 and gap_bytes > self.max_gap_fill_bytes:
-                                                logger.warning(
-                                                    f"Gap size ({gap_bytes} bytes) exceeds max_gap_fill_bytes "
-                                                    f"({self.max_gap_fill_bytes} bytes). Capping zero-fill."
-                                                )
-                                                fill_remaining = self.max_gap_fill_bytes
-
-                                            # stream zeros in chunks to ensure low constant memory consumption
-                                            chunk_size = min(fill_remaining, 1024 * 1024)
-                                            zero_chunk = b'\x00' * chunk_size
-                                            while fill_remaining > 0:
-                                                to_write = min(fill_remaining, len(zero_chunk))
-                                                current_file_handle.write(zero_chunk[:to_write])
-                                                fill_remaining -= to_write
+                                        self._write_gap_fill(current_file_handle, cand_start - phys_end, logger)
                                     current_fragments.append({"start_offset": cand_start, "end_offset": cand_end, "size": cand_end - cand_start})
                                 else:
                                     carving = False
                                     active_parser = None
-                                    if current_file_handle:
-                                        current_file_handle.close()
-                                        current_file_handle = None
-
-                                        # rename the file to explicitly mark it as a partial recovery
-                                        old_path = os.path.join(output_dir, current_filename)
-                                        current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
-                                        new_path = os.path.join(output_dir, current_filename)
-                                        if os.path.exists(old_path):
-                                            os.rename(old_path, new_path)
-
-                                    record = self._finalize_file_record(
+                                    record = self._finalize_partial_file(
                                         image_path=image_path,
-                                        file_path=os.path.join(output_dir, current_filename),
+                                        output_dir=output_dir,
+                                        current_filename=current_filename,
+                                        current_file_handle=current_file_handle,
                                         file_id=file_id,
-                                        filename=current_filename,
-                                        fmt=current_ext,
-                                        status="partial",
+                                        current_ext=current_ext,
                                         fragments=current_fragments,
                                         worker_id=worker_id,
                                         current_offset=f.tell(),
+                                        status="partial",
                                     )
+                                    current_file_handle = None
                                     report["files"].append(record)
                                     file_id += 1
                                     prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
@@ -394,40 +570,26 @@ class Carver:
 
                             # check for completion
                             if carving and engine.is_empty() and len(tags) > 0:
-                                logger.info(f"Successfully carved file {file_id}!")
-                                write_len = max(0, bytes_to_advance)
-
-                                discarded_bytes = len(cluster_to_write) - write_len
-                                current_fragments[-1]["end_offset"] -= discarded_bytes
-                                current_fragments[-1]["size"] -= discarded_bytes
-
-                                current_file_handle.write(cluster_to_write[:write_len])
-                                if current_file_handle:
-                                    current_file_handle.close()
-                                    current_file_handle = None
-
-                                # trigger post-processing routines
-                                carved_file_path = os.path.join(output_dir, current_filename)
-                                new_ext, new_filename = self._post_process_file(carved_file_path, current_ext, output_dir, current_filename, logger)
-                                final_path = os.path.join(output_dir, new_filename)
-
-                                record = self._finalize_file_record(
+                                record, prev_overlap = self._handle_file_completion(
                                     image_path=image_path,
-                                    file_path=final_path,
+                                    output_dir=output_dir,
+                                    current_filename=current_filename,
+                                    current_file_handle=current_file_handle,
                                     file_id=file_id,
-                                    filename=new_filename,
-                                    fmt=new_ext,
-                                    status="complete",
+                                    current_ext=current_ext,
                                     fragments=current_fragments,
                                     worker_id=worker_id,
-                                    current_offset=f.tell(),
+                                    cluster_to_write=cluster_to_write,
+                                    bytes_to_advance=bytes_to_advance,
+                                    f=f,
+                                    overlap_size=overlap_size,
+                                    logger=logger,
                                 )
                                 report["files"].append(record)
-
                                 file_id += 1
                                 carving = False
                                 active_parser = None
-                                prev_overlap = cluster[-overlap_size:] if overlap_size > 0 else b""
+                                current_file_handle = None
                             else:
                                 current_file_handle.write(cluster_to_write)
                 except Exception as e:
@@ -438,26 +600,20 @@ class Carver:
                     pbar.close()
                     # ensure final file handle is closed if the image ends prematurely or an exception occurs
                     if current_file_handle and not current_file_handle.closed:
-                        current_file_handle.close()
-
-                        old_path = os.path.join(output_dir, current_filename)
-                        current_filename = f"carved_w{worker_id}_{file_id}_partial.{current_ext}"
-                        new_path = os.path.join(output_dir, current_filename)
-                        if os.path.exists(old_path):
-                            os.rename(old_path, new_path)
-
-                        record = self._finalize_file_record(
+                        record = self._finalize_partial_file(
                             image_path=image_path,
-                            file_path=new_path,
+                            output_dir=output_dir,
+                            current_filename=current_filename,
+                            current_file_handle=current_file_handle,
                             file_id=file_id,
-                            filename=current_filename,
-                            fmt=current_ext,
-                            status="incomplete_eof",
+                            current_ext=current_ext,
                             fragments=current_fragments,
                             worker_id=worker_id,
                             current_offset=f.tell(),
+                            status="incomplete_eof",
                         )
                         report["files"].append(record)
+                        current_file_handle = None
 
                     if self.checkpoint_mgr:
                         self.checkpoint_mgr.save_worker_progress(worker_id, f.tell(), report["files"])

@@ -51,6 +51,15 @@ class HeaderDetector:
         search_buffer = prev_overlap + cluster
         cluster_lower = search_buffer.lower()
 
+        # precompute text cluster suitability once for text parsers
+        is_utf16 = search_buffer.startswith(b'\xff\xfe') or search_buffer.startswith(b'\xfe\xff')
+        is_text_cluster = is_utf16
+        if not is_utf16:
+            stripped_cluster = cluster.rstrip(b'\x00')
+            if len(stripped_cluster) > 0:
+                control_count = sum(1 for b in stripped_cluster if b < 32 and b not in (9, 10, 13)) + stripped_cluster.count(127)
+                is_text_cluster = (1.0 - (control_count / len(stripped_cluster))) >= 0.95
+
         best_idx = None
         best_parser = None
         best_is_binary = None
@@ -59,13 +68,8 @@ class HeaderDetector:
         for parser in self.registry.parsers:
             is_binary = getattr(parser, 'engine_type', 'semantic') == 'binary'
             # if it's a text parser, ensure the cluster is actually text data to avoid false matches in binary streams
-            if not is_binary:
-                stripped_cluster = cluster.rstrip(b'\x00')
-                if len(stripped_cluster) == 0:
-                    continue
-                control_count = sum(1 for b in stripped_cluster if b < 32 and b not in (9, 10, 13)) + stripped_cluster.count(127)
-                if (1.0 - (control_count / len(stripped_cluster))) < 0.95:
-                    continue
+            if not is_binary and not is_text_cluster:
+                continue
 
             target_buffer = search_buffer if is_binary else cluster_lower
             for sig in parser.header_signatures:

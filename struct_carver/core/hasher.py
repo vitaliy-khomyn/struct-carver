@@ -78,6 +78,34 @@ class CryptoHasher:
         hasher.update(data)
         return hasher.hexdigest()
 
+    def hash_file_range(self, file_path: str, start_offset: int, size: int, chunk_size: int = 1024 * 1024) -> str:
+        """Computes the cryptographic hex digest of a specific byte span in a file on disk streamingly.
+
+        Args:
+            file_path (str): Path to the target image file.
+            start_offset (int): Starting byte position in the file.
+            size (int): Total number of bytes to hash.
+            chunk_size (int, optional): Buffer read size in bytes (default: 1MB).
+
+        Returns:
+            str: Hexadecimal hash digest string.
+        """
+        if not os.path.exists(file_path) or size <= 0:
+            return ""
+
+        hasher = self._get_hasher()
+        bytes_left = size
+        with open(file_path, "rb") as f:
+            f.seek(start_offset)
+            while bytes_left > 0:
+                to_read = min(bytes_left, chunk_size)
+                chunk = f.read(to_read)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                bytes_left -= len(chunk)
+        return hasher.hexdigest()
+
     def generate_manifest_content(self, files: List[Dict[str, Any]]) -> str:
         """Generates standard checksum manifest content (e.g. for sha256sum).
 
@@ -104,7 +132,7 @@ class CryptoHasher:
         Returns:
             str: CSV formatted string.
         """
-        header = "file_id,filename,format,status,is_valid,hash_algo,file_hash,total_size,fragment_count,first_offset\n"
+        header = "file_id,filename,format,status,is_valid,hash_algo,file_hash,total_size,fragment_count,first_offset,start_lba,slack_bytes,entropy\n"
         rows = []
         for f in files:
             file_id = str(f.get("file_id", ""))
@@ -119,8 +147,11 @@ class CryptoHasher:
             frags = f.get("fragments", [])
             frag_count = str(len(frags))
             first_offset = str(frags[0]["start_offset"]) if frags else "0"
+            start_lba = str(f.get("start_lba", int(first_offset) // 512 if frags else 0))
+            slack_bytes = str(f.get("slack_bytes", 0))
+            entropy = str(f.get("entropy", ""))
 
-            row = f'"{file_id}","{filename}","{fmt}","{status}","{is_valid}","{algo}","{f_hash}",{size},{frag_count},{first_offset}'
+            row = f'"{file_id}","{filename}","{fmt}","{status}","{is_valid}","{algo}","{f_hash}",{size},{frag_count},{first_offset},{start_lba},{slack_bytes},"{entropy}"'
             rows.append(row)
 
         return header + "\n".join(rows) + ("\n" if rows else "")

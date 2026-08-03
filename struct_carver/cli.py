@@ -108,7 +108,9 @@ def deduplicate_boundary_overlaps(files, output_dir):
             continue
 
         first_offset = frags[0]["start_offset"]
+        last_offset = frags[-1]["end_offset"]
         file_hash = file_entry.get("file_hash", "")
+        status = file_entry.get("status", "")
 
         is_duplicate = False
 
@@ -127,6 +129,26 @@ def deduplicate_boundary_overlaps(files, output_dir):
                     if is_duplicate:
                         break
 
+        # check 3: if current is complete, check if it supersedes an earlier partial file
+        if not is_duplicate and status == "complete":
+            to_remove = []
+            for prior in deduped:
+                if prior.get("status") in ["partial", "incomplete_eof"]:
+                    p_frags = prior.get("fragments", [])
+                    if p_frags:
+                        p_start = p_frags[0]["start_offset"]
+                        p_end = p_frags[-1]["end_offset"]
+                        if first_offset <= p_start and p_end <= last_offset:
+                            to_remove.append(prior)
+            for old in to_remove:
+                deduped.remove(old)
+                old_file = os.path.join(output_dir, old.get("filename", ""))
+                if os.path.exists(old_file):
+                    try:
+                        os.remove(old_file)
+                    except OSError:
+                        pass
+
         if is_duplicate:
             # remove redundant duplicate file from disk
             filename = file_entry.get("filename", "")
@@ -144,7 +166,7 @@ def deduplicate_boundary_overlaps(files, output_dir):
     return deduped
 
 
-def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256"):
+def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", source_image_hashes=None):
     """Merges separate JSON reports from individual worker threads into a single report.
 
     Also runs boundary overlap deduplication and generates forensic evidence manifests.
@@ -153,12 +175,15 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256"):
         output_dir (str): Directory containing the worker report files.
         error_message (str, optional): An optional error message to attach to the report.
         hash_algo (str, optional): Algorithm name for forensic checksum manifests.
+        source_image_hashes (dict, optional): Cryptographic hashes of the source image.
     """
     report_files = glob.glob(os.path.join(output_dir, "carve_report_w*.json"))
     if not report_files and not error_message:
         return
 
     merged_report = {"files": []}
+    if source_image_hashes:
+        merged_report["source_image"] = source_image_hashes
     if error_message:
         merged_report["error"] = error_message
 
@@ -290,7 +315,7 @@ def main():
             sys.exit(1)
         with open(args.config, 'r') as f:
             custom_configs = json.load(f)
-        SUPPORTED_FORMATS.extend([cfg['extension'].lower() for cfg in custom_configs])
+        SUPPORTED_FORMATS.update([cfg['extension'].lower() for cfg in custom_configs])
 
     raw_formats = [fmt.strip().lower() for fmt in args.formats.split(',')]
     valid_formats = [fmt for fmt in raw_formats if fmt in SUPPORTED_FORMATS]
@@ -303,9 +328,24 @@ def main():
         logger.error("No valid formats specified to carve. Exiting.")
         sys.exit(1)
 
+    # compute cryptographic chain of custody hashes for target forensic image
+    logger.info("Computing source image cryptographic integrity verification hashes...")
+    sha256_hasher = CryptoHasher("sha256")
+    md5_hasher = CryptoHasher("md5")
+    source_sha256 = sha256_hasher.hash_file(args.image)
+    source_md5 = md5_hasher.hash_file(args.image)
+    source_image_hashes = {
+        "image_path": os.path.abspath(args.image),
+        "sha256": source_sha256,
+        "md5": source_md5,
+        "file_size": os.path.getsize(args.image)
+    }
+
     logger.info("========================================")
     logger.info("Starting Struct Carver!")
     logger.info(f"Target Image: {args.image}")
+    logger.info(f"Image SHA256: {source_sha256}")
+    logger.info(f"Image MD5:    {source_md5}")
     logger.info(f"Output Dir:   {args.output}")
     logger.info(f"Cluster Size: {args.cluster_size} bytes")
     logger.info(f"Formats:      {', '.join(valid_formats)}")
@@ -348,7 +388,7 @@ def main():
         # add newlines to push terminal prompt safely below the multiprocess tqdm output bars
         print("\n" * args.workers)
         logger.info("Carving process completed successfully.")
-        merge_worker_reports(args.output, hash_algo=args.hash_algo)
+        merge_worker_reports(args.output, hash_algo=args.hash_algo, source_image_hashes=source_image_hashes)
 
         if args.dashboard:
             json_report = os.path.join(args.output, "carve_report.json")
@@ -360,7 +400,7 @@ def main():
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}", exc_info=True)
         try:
-            merge_worker_reports(args.output, error_message=str(e), hash_algo=args.hash_algo)
+            merge_worker_reports(args.output, error_message=str(e), hash_algo=args.hash_algo, source_image_hashes=source_image_hashes)
             if args.dashboard:
                 json_report = os.path.join(args.output, "carve_report.json")
                 html_out = os.path.join(args.output, "dashboard.html")

@@ -20,6 +20,8 @@ class RTFParser(TextFormatParser):
         """Initializes the RTF parser state."""
         self.escape = False
         self.is_corrupted = False
+        self.depth = 0
+        self.has_opened = False
 
     def clone(self) -> 'RTFParser':
         """Creates a clone of the parser with the current state.
@@ -30,12 +32,16 @@ class RTFParser(TextFormatParser):
         new_parser = RTFParser()
         new_parser.escape = self.escape
         new_parser.is_corrupted = self.is_corrupted
+        new_parser.depth = self.depth
+        new_parser.has_opened = self.has_opened
         return new_parser
 
     def reset(self):
         """Resets the parser state back to initial default values."""
         self.escape = False
         self.is_corrupted = False
+        self.depth = 0
+        self.has_opened = False
 
     def state_tuple(self) -> tuple:
         """Returns a hashable representing the internal parser state.
@@ -43,7 +49,7 @@ class RTFParser(TextFormatParser):
         Returns:
             tuple: representation of parser state.
         """
-        return (self.escape, self.is_corrupted)
+        return (self.escape, self.is_corrupted, self.depth, self.has_opened)
 
     def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
         """Checks if a candidate cluster contains RTF brace tokens.
@@ -54,7 +60,7 @@ class RTFParser(TextFormatParser):
         Returns:
             bool: True if RTF structural characters are present.
         """
-        return any(c in candidate_cluster for c in [b'{', b'}', b'\\'])
+        return b'{' in candidate_cluster or b'}' in candidate_cluster
 
     @property
     def header_signatures(self) -> List[bytes]:
@@ -89,7 +95,7 @@ class RTFParser(TextFormatParser):
 
         for i, byte_val in enumerate(data):
             # check for binary control bytes (strictly illegal in RTF)
-            if byte_val < 32 and byte_val not in (9, 10, 13):
+            if self.is_illegal_control_byte(byte_val):
                 self.is_corrupted = True
                 return [], 0
 
@@ -97,13 +103,25 @@ class RTFParser(TextFormatParser):
                 self.escape = False
                 continue
 
+            if self.has_opened and self.depth == 0:
+                if byte_val in (ord(' '), ord('\t'), ord('\r'), ord('\n')):
+                    continue
+                elif byte_val == ord('{'):
+                    break
+                else:
+                    self.is_corrupted = True
+                    break
+
             if byte_val == ord('\\'):
                 self.escape = True
             elif byte_val == ord('{'):
                 tags.append(('{', False))
+                self.depth += 1
+                self.has_opened = True
                 last_offset = i + 1
             elif byte_val == ord('}'):
                 tags.append(('{', True))
+                self.depth -= 1
                 last_offset = i + 1
 
         return tags, last_offset

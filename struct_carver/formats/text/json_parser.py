@@ -22,6 +22,8 @@ class JSONParser(TextFormatParser):
         self.in_string = False
         self.escape_next = False
         self.is_corrupted = False
+        self.depth = 0
+        self.has_opened = False
 
     def clone(self) -> 'JSONParser':
         """Creates a clone of the parser with the current state.
@@ -33,6 +35,8 @@ class JSONParser(TextFormatParser):
         new_parser.in_string = self.in_string
         new_parser.escape_next = self.escape_next
         new_parser.is_corrupted = self.is_corrupted
+        new_parser.depth = self.depth
+        new_parser.has_opened = self.has_opened
         return new_parser
 
     def reset(self):
@@ -40,6 +44,8 @@ class JSONParser(TextFormatParser):
         self.in_string = False
         self.escape_next = False
         self.is_corrupted = False
+        self.depth = 0
+        self.has_opened = False
 
     def state_tuple(self) -> tuple:
         """Returns a hashable representation of the parser state.
@@ -47,7 +53,7 @@ class JSONParser(TextFormatParser):
         Returns:
             tuple: representation of parser state.
         """
-        return (self.in_string, self.escape_next, self.is_corrupted)
+        return (self.in_string, self.escape_next, self.is_corrupted, self.depth, self.has_opened)
 
     def has_continuation_markers(self, candidate_cluster: bytes) -> bool:
         """Checks if a candidate cluster contains JSON structure delimiter characters.
@@ -95,7 +101,7 @@ class JSONParser(TextFormatParser):
 
         for i, byte_val in enumerate(data):
             # control characters (except tab, LF, CR) are strictly illegal in JSON
-            if byte_val < 32 and byte_val not in (9, 10, 13):
+            if self.is_illegal_control_byte(byte_val):
                 self.is_corrupted = True
                 break
 
@@ -107,6 +113,17 @@ class JSONParser(TextFormatParser):
                 elif byte_val == ord('"'):
                     self.in_string = False
             else:
+                # if root object or array has already closed, inspect trailing bytes
+                if self.has_opened and self.depth == 0:
+                    if byte_val in (ord(' '), ord('\t'), ord('\r'), ord('\n')):
+                        continue
+                    elif byte_val in (ord('{'), ord('[')):
+                        # start of a new root document; complete current document here
+                        break
+                    else:
+                        self.is_corrupted = True
+                        break
+
                 if byte_val == ord('"'):
                     self.in_string = True
                 elif byte_val not in allowed_outside:
@@ -114,15 +131,21 @@ class JSONParser(TextFormatParser):
                     break
                 elif byte_val == ord('{'):
                     tags.append(('{', False))
+                    self.depth += 1
+                    self.has_opened = True
                     last_offset = i + 1
                 elif byte_val == ord('}'):
                     tags.append(('{', True))
+                    self.depth -= 1
                     last_offset = i + 1
                 elif byte_val == ord('['):
                     tags.append(('[', False))
+                    self.depth += 1
+                    self.has_opened = True
                     last_offset = i + 1
                 elif byte_val == ord(']'):
                     tags.append(('[', True))
+                    self.depth -= 1
                     last_offset = i + 1
 
         return tags, last_offset
