@@ -45,6 +45,7 @@ class Carver:
         max_file_size: int = 2 * 1024 * 1024 * 1024,
         extract_archives: bool = False,
         quiet: bool = False,
+        carved_dir: Optional[str] = None,
     ):
         """Initializes the carver orchestrator and underlying components.
 
@@ -61,6 +62,7 @@ class Carver:
             max_file_size (int, optional): Maximum carved file size before truncation (default: 2GB).
             extract_archives (bool, optional): Whether to extract carved archives safely (default: False).
             quiet (bool, optional): Suppress progress indicators and non-essential logs (default: False).
+            carved_dir (Optional[str], optional): Dedicated directory for carved files (default: None).
         """
         self.cluster_size = cluster_size
         self.max_search_clusters = max_search_clusters
@@ -68,6 +70,7 @@ class Carver:
         self.max_gap_fill_bytes = max_gap_fill_bytes
         self.max_file_size = max_file_size
         self.quiet = quiet
+        self.carved_dir = carved_dir
 
         if isinstance(hasher, str):
             self.hasher: Optional[CryptoHasher] = CryptoHasher(hasher)
@@ -419,7 +422,15 @@ class Carver:
 
         return record, prev_overlap
 
-    def carve(self, image_path: str, output_dir: str, start_offset: int = 0, end_offset: Optional[int] = None, worker_id: int = 0):
+    def carve(
+        self,
+        image_path: str,
+        output_dir: str,
+        start_offset: int = 0,
+        end_offset: Optional[int] = None,
+        worker_id: int = 0,
+        carved_dir: Optional[str] = None,
+    ):
         """Carves supported files out of the raw forensic image file stream.
 
         Args:
@@ -428,8 +439,26 @@ class Carver:
             start_offset (int, optional): Disk block scan starting point (default: 0).
             end_offset (int, optional): Disk block scan end boundary point.
             worker_id (int, optional): Context worker process ID thread.
+            carved_dir (Optional[str], optional): Directory for carved files (default: None).
         """
         os.makedirs(output_dir, exist_ok=True)
+
+        effective_carved_dir = carved_dir or self.carved_dir
+        if effective_carved_dir:
+            if os.path.exists(effective_carved_dir) and os.path.isdir(effective_carved_dir):
+                if any(os.scandir(effective_carved_dir)):
+                    is_resuming = bool(
+                        self.checkpoint_mgr
+                        and self.checkpoint_mgr.checkpoint_file
+                        and os.path.exists(self.checkpoint_mgr.checkpoint_file)
+                    )
+                    if not is_resuming:
+                        raise FileExistsError(
+                            f"Carved output subfolder '{effective_carved_dir}' already exists and contains files."
+                        )
+            os.makedirs(effective_carved_dir, exist_ok=True)
+        else:
+            effective_carved_dir = output_dir
 
         logger = setup_logger(f"Worker-{worker_id}", os.path.join(output_dir, f"audit_w{worker_id}.log"))
         logger.info(f"Starting carving process for worker {worker_id} from offset {start_offset} to {end_offset or 'EOF'}")
@@ -497,7 +526,7 @@ class Carver:
                         if not carving:
                             # 2. search for the beginning of a file
                             carving, active_parser, engine, current_file_handle, search_buffer, best_idx = self._detect_header(
-                                cluster, prev_overlap, file_id, output_dir, worker_id
+                                cluster, prev_overlap, file_id, effective_carved_dir, worker_id
                             )
                             if carving:
                                 overlap_len = len(search_buffer) - (phys_end - phys_start)
@@ -531,7 +560,7 @@ class Carver:
                                     carving = False
                                     active_parser = None
                                     prev_overlap = self._handle_false_positive(
-                                        output_dir=output_dir,
+                                        output_dir=effective_carved_dir,
                                         current_filename=current_filename,
                                         current_file_handle=current_file_handle,
                                         f=f,
@@ -555,8 +584,8 @@ class Carver:
                                     parser_is_binary = getattr(active_parser, 'engine_type', 'semantic') == 'binary'
                                     if parser_is_binary:
                                         if current_file_handle:
-                                            current_file_handle.write(cluster)
-                                            current_file_bytes += len(cluster)
+                                             current_file_handle.write(cluster)
+                                             current_file_bytes += len(cluster)
                                         gap_bytes = cand_start - phys_end
                                         self._write_gap_fill(current_file_handle, gap_bytes, logger)
                                         current_file_bytes += max(0, gap_bytes)
@@ -566,7 +595,7 @@ class Carver:
                                     active_parser = None
                                     record = self._finalize_partial_file(
                                         image_path=image_path,
-                                        output_dir=output_dir,
+                                        output_dir=effective_carved_dir,
                                         current_filename=current_filename,
                                         current_file_handle=current_file_handle,
                                         file_id=file_id,
@@ -586,7 +615,7 @@ class Carver:
                             if carving and engine.is_empty() and len(tags) > 0:
                                 record, prev_overlap = self._handle_file_completion(
                                     image_path=image_path,
-                                    output_dir=output_dir,
+                                    output_dir=effective_carved_dir,
                                     current_filename=current_filename,
                                     current_file_handle=current_file_handle,
                                     file_id=file_id,
@@ -614,7 +643,7 @@ class Carver:
                                     )
                                     record = self._finalize_partial_file(
                                         image_path=image_path,
-                                        output_dir=output_dir,
+                                        output_dir=effective_carved_dir,
                                         current_filename=current_filename,
                                         current_file_handle=current_file_handle,
                                         file_id=file_id,
@@ -640,7 +669,7 @@ class Carver:
                     if current_file_handle and not current_file_handle.closed:
                         record = self._finalize_partial_file(
                             image_path=image_path,
-                            output_dir=output_dir,
+                            output_dir=effective_carved_dir,
                             current_filename=current_filename,
                             current_file_handle=current_file_handle,
                             file_id=file_id,

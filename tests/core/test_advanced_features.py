@@ -26,6 +26,7 @@ from struct_carver.core.buffered_reader import (
 from struct_carver.core.validator import FileValidator
 from struct_carver.core.carver import Carver
 from struct_carver.formats.registry import ParserRegistry, expand_format_categories
+from struct_carver.dashboard import generate_dashboard
 
 
 class TestAdvancedFeatures(unittest.TestCase):
@@ -329,6 +330,86 @@ class TestAdvancedFeatures(unittest.TestCase):
             # status should be partial because it exceeded max_file_size
             self.assertEqual(carved_file["status"], "partial")
             self.assertLessEqual(carved_file["size"], 1024 + cluster_size)
+
+    def test_carved_subfolder_separation(self):
+        """Verify carved files are written into dedicated carved subfolder while metadata stays in root."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            img_path = os.path.join(tmp_dir, "test.raw")
+            carved_sub = os.path.join(tmp_dir, "carved")
+            cluster_size = 512
+            html_payload = b"<html><body><h1>Evidence</h1></body></html>".ljust(cluster_size, b"\x00")
+            with open(img_path, "wb") as f:
+                f.write(html_payload)
+
+            carver = Carver(cluster_size=cluster_size, formats=["html"], quiet=True)
+            carver.carve(img_path, tmp_dir, 0, len(html_payload), worker_id=0, carved_dir=carved_sub)
+
+            # verify carved subfolder exists and contains the carved file
+            self.assertTrue(os.path.isdir(carved_sub))
+            carved_files = os.listdir(carved_sub)
+            self.assertEqual(len(carved_files), 1)
+            self.assertTrue(carved_files[0].startswith("carved_w0_"))
+
+            # verify metadata files remain in session root tmp_dir
+            root_files = os.listdir(tmp_dir)
+            self.assertIn("carve_report_w0.json", root_files)
+            self.assertIn("audit_w0.log", root_files)
+            self.assertIn("carved", root_files)
+            # verify carved html file is not in root
+            self.assertNotIn(carved_files[0], root_files)
+
+    def test_carved_subfolder_error_when_non_empty(self):
+        """Verify FileExistsError is raised when carved subfolder already exists with files and not resuming."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            img_path = os.path.join(tmp_dir, "test.raw")
+            carved_sub = os.path.join(tmp_dir, "carved")
+            os.makedirs(carved_sub, exist_ok=True)
+            # place pre-existing file in carved directory
+            with open(os.path.join(carved_sub, "stray_file.txt"), "w") as f:
+                f.write("pre-existing data")
+
+            with open(img_path, "wb") as f:
+                f.write(b"<html><body><h1>Test</h1></body></html>")
+
+            carver = Carver(cluster_size=512, formats=["html"], quiet=True)
+            with self.assertRaises(FileExistsError):
+                carver.carve(img_path, tmp_dir, 0, 100, worker_id=0, carved_dir=carved_sub)
+
+    def test_dashboard_forensic_interpretation_footer(self):
+        """Verify HTML dashboard renders evidentiary interpretation guidelines footer."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_path = os.path.join(tmp_dir, "carve_report.json")
+            html_path = os.path.join(tmp_dir, "dashboard.html")
+            sample_report = {
+                "hash_algo": "sha256",
+                "files": [
+                    {
+                        "file_id": 0,
+                        "filename": "carved_w0_0.png",
+                        "format": "png",
+                        "status": "complete",
+                        "total_size": 1024,
+                        "fragments": [{"start_offset": 0, "end_offset": 1024, "size": 1024}],
+                        "entropy": 7.8,
+                        "file_hash": "abcdef1234567890abcdef1234567890",
+                        "validation": {"is_valid": True, "details": "Header verified"}
+                    }
+                ]
+            }
+            with open(json_path, "w") as f:
+                json.dump(sample_report, f)
+
+            generate_dashboard(json_path, html_path)
+            self.assertTrue(os.path.exists(html_path))
+            with open(html_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            self.assertIn("forensic-disclaimer", content)
+            self.assertIn("Forensic Evidentiary Standards", content)
+            self.assertIn("Shannon Entropy Interpretation", content)
+            self.assertIn("Payload Integrity Verification", content)
+            self.assertIn("Metadata &amp; Timestamps", content)
+            self.assertIn("Reconstruction Status &amp; Slack Space", content)
 
 
 if __name__ == "__main__":

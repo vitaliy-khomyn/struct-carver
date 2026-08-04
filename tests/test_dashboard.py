@@ -21,6 +21,12 @@ class TestDashboard(unittest.TestCase):
             html_path = os.path.join(temp_dir, "dashboard.html")
 
             mock_report = {
+                "hash_algo": "sha256",
+                "source_image": {
+                    "image_path": "/path/to/test.dd",
+                    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    "md5": "d41d8cd98f00b204e9800998ecf8427e",
+                },
                 "files": [
                     {
                         "file_id": 0,
@@ -28,7 +34,15 @@ class TestDashboard(unittest.TestCase):
                         "format": "xml",
                         "status": "complete",
                         "total_size": 1024,
-                        "fragments": [{"start_offset": 0, "end_offset": 1024, "size": 1024}]
+                        "file_hash": "a" * 64,
+                        "hash_algo": "sha256",
+                        "fragments": [{"start_offset": 0, "end_offset": 1024, "size": 1024}],
+                        "metadata": {
+                            "creator": "tester",
+                            "lastmodifiedby": "tester",
+                            "created": "2012-07-05T17:27:56Z",
+                            "revision": "4",
+                        },
                     }
                 ]
             }
@@ -42,6 +56,19 @@ class TestDashboard(unittest.TestCase):
                 html_content = f.read()
                 self.assertIn("carved_w0_0.xml", html_content)
                 self.assertIn("Complete Recoveries", html_content)
+                # verify chain of custody box
+                self.assertIn("Forensic Chain of Custody &amp; Image Integrity", html_content.replace("&", "&amp;"))
+                self.assertIn("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", html_content)
+                # verify full hash is present without ellipsis
+                self.assertIn("a" * 64, html_content)
+                self.assertNotIn("a" * 16 + "...", html_content)
+                self.assertIn("hash-scrollable", html_content)
+                # verify algorithm in header and tag
+                self.assertIn("Forensic Hash (SHA256)", html_content)
+                self.assertIn("<span class=\"algo-tag\">SHA256</span>", html_content)
+                # verify metadata dropdown
+                self.assertIn("meta-dropdown", html_content)
+                self.assertIn("+1 more", html_content)
 
 
 if __name__ == '__main__':

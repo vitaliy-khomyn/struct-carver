@@ -7,9 +7,11 @@
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; }
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
-        .chain-box { background: #2c3e50; color: #ecf0f1; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .chain-box h4 { margin: 0 0 10px 0; color: #3498db; font-size: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .chain-box { background: #1e293b; color: #f8fafc; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.12); border: 1px solid #334155; }
+        .chain-box h4 { margin: 0 0 10px 0; color: #38bdf8; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
         .chain-grid { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; }
+        .chain-grid strong { color: #cbd5e1; margin-right: 4px; }
+        .chain-box code { background: #0f172a; color: #38bdf8; padding: 3px 8px; border-radius: 4px; border: 1px solid #334155; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; word-break: break-all; }
         .summary-cards { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
         .card { background: #fff; padding: 15px 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); flex: 1; min-width: 150px; text-align: center; }
         .card h3 { margin: 0; font-size: 24px; color: #2c3e50; }
@@ -40,11 +42,20 @@
         .ent-low { background: #e8f8f5; color: #16a085; }
         .ent-mid { background: #ebf5fb; color: #2980b9; }
         .ent-high { background: #fdedec; color: #c0392b; }
-        .algo-tag { background: #34495e; color: #ecf0f1; font-size: 9px; padding: 1px 4px; border-radius: 3px; vertical-align: middle; }
-        .hash-code { font-size: 11px; font-family: monospace; }
+        .hash-cell-wrap { display: flex; align-items: center; gap: 6px; max-width: 230px; }
+        .algo-tag { background: #334155; color: #38bdf8; font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; text-transform: uppercase; flex-shrink: 0; }
+        .hash-scrollable { overflow-x: auto; white-space: nowrap; max-width: 170px; scrollbar-width: thin; padding-bottom: 2px; }
+        .hash-scrollable::-webkit-scrollbar { height: 4px; }
+        .hash-scrollable::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 2px; }
+        .hash-scrollable code { background: #f1f5f9; color: #0f172a; border: 1px solid #cbd5e1; padding: 2px 6px; border-radius: 4px; font-size: 11px; display: inline-block; cursor: pointer; }
+        .hash-scrollable code:hover { background: #e2e8f0; border-color: #38bdf8; }
         details { cursor: pointer; }
         .frag-details { margin-top: 5px; font-size: 11px; background: #ecf0f1; padding: 6px; border-radius: 4px; }
-        code { background: #dfe6e9; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+        .meta-dropdown { margin-top: 4px; }
+        .meta-dropdown summary { color: #2563eb; font-weight: 600; font-size: 11px; cursor: pointer; outline: none; user-select: none; }
+        .meta-dropdown summary:hover { color: #1d4ed8; text-decoration: underline; }
+        .meta-expanded { margin-top: 4px; padding: 4px 6px; background: #f8fafc; border-radius: 4px; border-left: 2px solid #3b82f6; font-size: 11px; line-height: 1.5; }
+        code { background: #e2e8f0; color: #1e293b; padding: 2px 5px; border-radius: 3px; font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; }
         .frag-track { position: relative; width: 100px; height: 10px; background-color: #dfe6e9; border-radius: 5px; overflow: hidden; display: inline-block; }
         .frag-segment { position: absolute; height: 100%; transition: transform 0.1s; cursor: pointer; }
         .frag-segment:hover { transform: scaleY(1.3); }
@@ -52,6 +63,16 @@
         .segment-partial { background-color: #f39c12; }
         .segment-incomplete { background-color: #e74c3c; }
         .text-muted { color: #95a5a6; }
+        .forensic-disclaimer { margin-top: 30px; background: #fff; border: 1px solid #cbd5e1; border-left: 5px solid #e67e22; border-radius: 8px; padding: 20px 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.06); color: #334155; }
+        .disclaimer-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .disclaimer-header h3 { margin: 0; color: #d35400; font-size: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .warning-icon { font-size: 22px; color: #e67e22; }
+        .disclaimer-lead { font-size: 13px; line-height: 1.5; margin: 0 0 16px 0; color: #475569; }
+        .disclaimer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+        .disclaimer-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; }
+        .disclaimer-card h4 { margin: 0 0 8px 0; color: #1e293b; font-size: 13px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px; }
+        .disclaimer-card ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.5; color: #475569; }
+        .disclaimer-card li { margin-bottom: 6px; }
     </style>
 </head>
 <body>
@@ -86,7 +107,7 @@
                 <th>Size / Slack</th>
                 <th>Entropy</th>
                 <th>Validation</th>
-                <th>Forensic Hash</th>
+                <th>Forensic Hash ({{hash_algo_header}})</th>
                 <th>Metadata</th>
                 <th>Fragments</th>
                 <th>Visual Blocks</th>
@@ -96,6 +117,48 @@
             {{rows_html}}
         </tbody>
     </table>
+
+    <footer class="forensic-disclaimer">
+        <div class="disclaimer-header">
+            <span class="warning-icon">&#9888;</span>
+            <h3>Forensic Evidentiary Standards &amp; Interpretation Guidelines</h3>
+        </div>
+        <p class="disclaimer-lead">
+            <strong>Cautionary Notice for Forensic Examiners:</strong> Digital evidence reconstructed via non-sequential file carving requires critical corroboration. Automated classifications should never be treated as definitive legal conclusions without contextual investigation and manual validation.
+        </p>
+        <div class="disclaimer-grid">
+            <div class="disclaimer-card">
+                <h4>Shannon Entropy Interpretation</h4>
+                <ul>
+                    <li><strong>Low (&lt; 4.0):</strong> Indicates sparse, uniform data, zero-fill, or ASCII text. Inter-cluster null padding and gap zero-fills naturally depress entropy scores.</li>
+                    <li><strong>Moderate (4.0 – 7.2):</strong> Typical of structured documents, database pages, and uncompressed code/markup.</li>
+                    <li><strong>High (&gt; 7.2):</strong> Indicates compressed archives (ZIP, GZ), media payloads (JPEG, MP3), or encrypted data. High entropy alone does <em>not</em> prove encryption, obfuscation, or malicious intent.</li>
+                </ul>
+            </div>
+            <div class="disclaimer-card">
+                <h4>Payload Integrity Verification</h4>
+                <ul>
+                    <li><strong>VERIFIED:</strong> Confirms container syntax, chunk CRCs, or database PRAGMA integrity passed. It does <em>not</em> prove the file is free of malware, steganography, or malicious modification.</li>
+                    <li><strong>CORRUPTED:</strong> Indicates a checksum mismatch, truncated container, or invalid atom length. This often results from fragmented allocation or overwritten sectors, not necessarily intentional tampering.</li>
+                    <li><strong>N/A:</strong> Denotes formats without native checksums (plain text, RTF, BMP). Lack of automated validation does not indicate corruption.</li>
+                </ul>
+            </div>
+            <div class="disclaimer-card">
+                <h4>Metadata &amp; Timestamps</h4>
+                <ul>
+                    <li>Extracted timestamps (EXIF, PDF dictionary, Office XML) reflect <em>embedded application metadata</em>, not filesystem MACB (Modified, Accessed, Changed, Birth) records.</li>
+                    <li>Application timestamps can be forged, skewed by incorrect system clocks, or preserved from earlier template documents. Always cross-reference with filesystem journals and $MFT records.</li>
+                </ul>
+            </div>
+            <div class="disclaimer-card">
+                <h4>Reconstruction Status &amp; Slack Space</h4>
+                <ul>
+                    <li>Slack space bytes represent unallocated remnants within the final physical disk cluster. They may contain residual historical data from prior deleted files.</li>
+                    <li>Files marked <em>Partial</em> were truncated at gap-jump thresholds; intact initial fragments may still hold probative evidentiary value.</li>
+                </ul>
+            </div>
+        </div>
+    </footer>
 
     <script>
         function filterTable(filterClass) {

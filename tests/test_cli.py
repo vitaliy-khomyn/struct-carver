@@ -70,6 +70,41 @@ class TestCLI(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(temp_dir, "manifest.sha256")))
             self.assertTrue(os.path.exists(os.path.join(temp_dir, "manifest.csv")))
 
+    def test_main_keyboard_interrupt_handling(self):
+        """Verifies main intercepts KeyboardInterrupt and exits cleanly with code 130 without traceback."""
+        import io
+        from unittest.mock import patch
+        from struct_carver.cli import main
+
+        test_args = ["cli.py", "-i", "dummy.dd", "-o", "dummy_out"]
+        stderr_capture = io.StringIO()
+        with patch("sys.argv", test_args), \
+             patch("argparse.ArgumentParser.parse_args", side_effect=KeyboardInterrupt), \
+             patch("sys.stderr", stderr_capture), \
+             self.assertRaises(SystemExit) as ctx:
+            main()
+
+        self.assertEqual(ctx.exception.code, 130)
+        output = stderr_capture.getvalue()
+        self.assertIn("aborted by user", output.lower())
+        self.assertNotIn("Traceback", output)
+
+    def test_global_excepthook_keyboard_interrupt(self):
+        """Verifies _global_excepthook intercepts KeyboardInterrupt without printing traceback."""
+        import io
+        from unittest.mock import patch
+        from struct_carver.cli import _global_excepthook
+
+        stderr_capture = io.StringIO()
+        with patch("sys.stderr", stderr_capture), \
+             self.assertRaises(SystemExit) as ctx:
+            _global_excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+
+        self.assertEqual(ctx.exception.code, 130)
+        output = stderr_capture.getvalue()
+        self.assertIn("aborted by user", output.lower())
+        self.assertNotIn("Traceback", output)
+
 
 if __name__ == '__main__':
     unittest.main()

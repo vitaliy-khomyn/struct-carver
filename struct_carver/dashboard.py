@@ -82,9 +82,16 @@ def generate_dashboard(json_path: str, output_html: str):
 
         if metadata:
             meta_items = [f"<strong>{k}:</strong> {v}" for k, v in metadata.items()]
-            meta_display = "<br>".join(meta_items[:3])
-            if len(meta_items) > 3:
-                meta_display += f"<br><small>+{len(meta_items) - 3} more</small>"
+            if len(meta_items) <= 3:
+                meta_display = "<br>".join(meta_items)
+            else:
+                preview = "<br>".join(meta_items[:3])
+                remaining = "<br>".join(meta_items[3:])
+                meta_display = f"""{preview}
+                <details class="meta-dropdown">
+                    <summary>+{len(meta_items) - 3} more</summary>
+                    <div class="meta-expanded">{remaining}</div>
+                </details>"""
         else:
             meta_display = "<span class='text-muted'>None</span>"
 
@@ -102,9 +109,12 @@ def generate_dashboard(json_path: str, output_html: str):
             val_class = "val-is-na"
 
         file_hash = f.get("file_hash", "")
-        hash_algo = f.get("hash_algo", "sha256").upper()
+        hash_algo = (f.get("hash_algo") or report.get("hash_algo") or "sha256").upper()
         if file_hash:
-            hash_display = f"<code class='hash-code' title='{file_hash}'>{file_hash[:16]}...</code> <span class='algo-tag'>{hash_algo}</span>"
+            hash_display = f"""<div class="hash-cell-wrap">
+                <span class="algo-tag">{hash_algo}</span>
+                <div class="hash-scrollable" title="Click to copy full hash" onclick="navigator.clipboard.writeText('{file_hash}')"><code>{file_hash}</code></div>
+            </div>"""
         else:
             hash_display = "<span class='text-muted'>-</span>"
 
@@ -179,10 +189,14 @@ def generate_dashboard(json_path: str, output_html: str):
         logger.error(f"HTML dashboard template not found at '{template_path}'.")
         return
 
+    # determine dominant forensic hash algorithm for header
+    hash_algo_header = (report.get("hash_algo") or (files[0].get("hash_algo") if files and files[0].get("hash_algo") else "SHA-256")).upper()
+
     # substitute template variables
     rendered_html = (
         template_str
         .replace("{{img_chain_card}}", img_chain_card)
+        .replace("{{hash_algo_header}}", hash_algo_header)
         .replace("{{total_files}}", str(total_files))
         .replace("{{complete_files}}", str(complete_files))
         .replace("{{partial_files}}", str(partial_files))
@@ -217,4 +231,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stderr.write("\n[-] Dashboard generation aborted by user.\n")
+        sys.exit(130)

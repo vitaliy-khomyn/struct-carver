@@ -7,6 +7,42 @@ and generate the forensic dashboard.
 
 import os
 import sys
+import signal
+import multiprocessing
+
+# intercept SIGINT and unhandled KeyboardInterrupt immediately before heavy imports
+def _global_excepthook(exc_type, exc_value, exc_traceback):
+    """Intercepts unhandled KeyboardInterrupt globally to prevent Python tracebacks."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        try:
+            is_main = multiprocessing.current_process().name == "MainProcess"
+        except Exception:
+            is_main = True
+        if is_main:
+            sys.stderr.write("\n[-] Carving process aborted by user. Exiting...\n")
+        sys.exit(130)
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+
+sys.excepthook = _global_excepthook
+
+
+def _sigint_handler(signum, frame):
+    """Handles SIGINT signal directly across threads and during imports."""
+    try:
+        is_main = multiprocessing.current_process().name == "MainProcess"
+    except Exception:
+        is_main = True
+    if is_main:
+        sys.stderr.write("\n[-] Carving process aborted by user. Exiting...\n")
+    sys.exit(130)
+
+
+try:
+    signal.signal(signal.SIGINT, _sigint_handler)
+except (ValueError, AttributeError):
+    pass
+
 import glob
 import json
 import logging
@@ -34,28 +70,42 @@ def carve_worker(args):
     max_file_size = 2 * 1024 * 1024 * 1024
     extract_archives = False
     quiet = False
+    carved_dir = None
 
-    if len(args) >= 18:
+    if len(args) >= 19:
+        (image, output, cluster_size, formats, start, end, worker_id,
+         custom_configs, max_search, density, profile, max_gap_fill,
+         hash_algo, validate, resume, max_file_size, extract_archives, quiet,
+         carved_dir) = args[:19]
+    elif len(args) >= 18:
         (image, output, cluster_size, formats, start, end, worker_id,
          custom_configs, max_search, density, profile, max_gap_fill,
          hash_algo, validate, resume, max_file_size, extract_archives, quiet) = args[:18]
+        carved_dir = os.path.join(output, "carved")
     elif len(args) >= 17:
         (image, output, cluster_size, formats, start, end, worker_id,
          custom_configs, max_search, density, profile, max_gap_fill,
          hash_algo, validate, resume, max_file_size, extract_archives) = args[:17]
+        carved_dir = os.path.join(output, "carved")
     elif len(args) == 15:
         (image, output, cluster_size, formats, start, end, worker_id,
          custom_configs, max_search, density, profile, max_gap_fill,
          hash_algo, validate, resume) = args
+        carved_dir = os.path.join(output, "carved")
     elif len(args) == 12:
         (image, output, cluster_size, formats, start, end, worker_id,
          custom_configs, max_search, density, profile, max_gap_fill) = args
         hash_algo, validate, resume = 'sha256', True, False
+        carved_dir = os.path.join(output, "carved")
     else:
         (image, output, cluster_size, formats, start, end, worker_id,
          custom_configs, max_search, density, profile) = args
         max_gap_fill = 100 * 1024 * 1024
         hash_algo, validate, resume = 'sha256', True, False
+        carved_dir = os.path.join(output, "carved")
+
+    if not carved_dir:
+        carved_dir = os.path.join(output, "carved")
 
     custom_parsers = []
     for cfg in custom_configs:
@@ -77,19 +127,23 @@ def carve_worker(args):
         checkpoint_mgr=checkpoint_mgr,
         max_file_size=max_file_size,
         extract_archives=extract_archives,
-        quiet=quiet
+        quiet=quiet,
+        carved_dir=carved_dir
     )
 
-    if profile:
-        import cProfile
-        profiler = cProfile.Profile()
-        profiler.enable()
-        carver.carve(image, output, start, end, worker_id)
-        profiler.disable()
-        stats_path = os.path.join(output, f"profile_w{worker_id}.prof")
-        profiler.dump_stats(stats_path)
-    else:
-        carver.carve(image, output, start, end, worker_id)
+    try:
+        if profile:
+            import cProfile
+            profiler = cProfile.Profile()
+            profiler.enable()
+            carver.carve(image, output, start, end, worker_id, carved_dir=carved_dir)
+            profiler.disable()
+            stats_path = os.path.join(output, f"profile_w{worker_id}.prof")
+            profiler.dump_stats(stats_path)
+        else:
+            carver.carve(image, output, start, end, worker_id, carved_dir=carved_dir)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 def deduplicate_boundary_overlaps(files, output_dir):
@@ -159,7 +213,9 @@ def deduplicate_boundary_overlaps(files, output_dir):
                             to_remove.append(prior)
             for old in to_remove:
                 deduped.remove(old)
-                old_file = os.path.join(output_dir, old.get("filename", ""))
+                carved_sub = os.path.join(output_dir, "carved")
+                target_folder = carved_sub if os.path.isdir(carved_sub) else output_dir
+                old_file = os.path.join(target_folder, old.get("filename", ""))
                 if os.path.exists(old_file):
                     try:
                         os.remove(old_file)
@@ -169,7 +225,9 @@ def deduplicate_boundary_overlaps(files, output_dir):
         if is_duplicate:
             # remove redundant duplicate file from disk
             filename = file_entry.get("filename", "")
-            file_path = os.path.join(output_dir, filename)
+            carved_sub = os.path.join(output_dir, "carved")
+            target_folder = carved_sub if os.path.isdir(carved_sub) else output_dir
+            file_path = os.path.join(target_folder, filename)
             if os.path.exists(file_path):
                 try:
                     os.remove(file_path)
@@ -199,6 +257,8 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
         return
 
     merged_report = {"files": []}
+    if hash_algo:
+        merged_report["hash_algo"] = hash_algo
     if source_image_hashes:
         merged_report["source_image"] = source_image_hashes
     if error_message:
@@ -256,8 +316,8 @@ def merge_worker_reports(output_dir, error_message=None, hash_algo="sha256", sou
     logger.info("Worker reports successfully merged into single carve_report.json and manifests created")
 
 
-def main():
-    """Main execution entrypoint for parsing command line arguments and starting the carving task."""
+def _run_main():
+    """Internal runner for parsing arguments and orchestrating carving execution."""
     parser = argparse.ArgumentParser(description="Struct Carver: A semantic, non-sequential file carver for digital forensics.")
     parser.add_argument('-i', '--image', required=True, help="Path to the raw forensic image (.dd, .raw)")
     parser.add_argument('-o', '--output', required=True, help="Directory to save the reassembled files")
@@ -312,6 +372,15 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     log_level = logging.WARNING if args.quiet else logging.INFO
     logger = setup_logger("Main", os.path.join(args.output, "audit_main.log"), level=log_level)
+
+    # ensure dedicated carved files directory exists and is empty
+    carved_dir = os.path.join(args.output, "carved")
+    if os.path.exists(carved_dir) and os.path.isdir(carved_dir):
+        if any(os.scandir(carved_dir)):
+            if not args.resume:
+                logger.error(f"Carved output subfolder '{carved_dir}' already exists and contains files.")
+                sys.exit(1)
+    os.makedirs(carved_dir, exist_ok=True)
 
     if not os.path.isfile(args.image):
         logger.error(f"Image file '{args.image}' not found.")
@@ -405,17 +474,29 @@ def main():
         worker_args.append((
             args.image, args.output, args.cluster_size, valid_formats, start, end, i,
             custom_configs, args.max_search, args.text_density, args.profile, args.max_gap_fill,
-            args.hash_algo, args.validate, args.resume, args.max_file_size, args.extract_archives, args.quiet
+            args.hash_algo, args.validate, args.resume, args.max_file_size, args.extract_archives, args.quiet,
+            carved_dir
         ))
 
     try:
         if args.workers == 1:
             carve_worker(worker_args[0])
         else:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=args.workers)
+            try:
                 futures = [executor.submit(carve_worker, arg) for arg in worker_args]
                 for future in concurrent.futures.as_completed(futures):
                     future.result()  # raises exceptions if any occurred
+            except (KeyboardInterrupt, concurrent.futures.process.BrokenProcessPool):
+                executor.shutdown(wait=False, cancel_futures=True)
+                for pid, process in getattr(executor, '_processes', {}).items():
+                    try:
+                        process.terminate()
+                    except (OSError, AttributeError):
+                        pass
+                raise KeyboardInterrupt
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
         # add newlines to push terminal prompt safely below the multiprocess tqdm output bars
         print("\n" * args.workers)
         logger.info("Carving process completed successfully.")
@@ -427,7 +508,7 @@ def main():
             generate_dashboard(json_report, html_out)
     except KeyboardInterrupt:
         logger.warning("Carving aborted by user.")
-        sys.exit(130)
+        raise
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}", exc_info=True)
         try:
@@ -441,5 +522,18 @@ def main():
         sys.exit(1)
 
 
+def main():
+    """Main execution entrypoint for parsing command line arguments and starting the carving task."""
+    try:
+        _run_main()
+    except KeyboardInterrupt:
+        sys.stderr.write("\n[-] Carving process aborted by user. Exiting...\n")
+        sys.exit(130)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stderr.write("\n[-] Carving process aborted by user. Exiting...\n")
+        sys.exit(130)
