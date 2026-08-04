@@ -18,6 +18,7 @@ class BaseFormatParser(ABC):
     """
 
     engine_type: str = "semantic"
+    header_offset: int = 0
 
     @property
     @abstractmethod
@@ -79,6 +80,18 @@ class BaseFormatParser(ABC):
             bool: True if the cluster contains characteristic syntax for this format.
         """
         return False
+
+    def validate_header(self, data: bytes, offset: int = 0) -> bool:
+        """Validates candidate header at given offset in buffer.
+
+        Args:
+            data (bytes): Buffer containing candidate header.
+            offset (int, optional): Starting offset of the file in data (default: 0).
+
+        Returns:
+            bool: True if candidate header appears valid, False otherwise.
+        """
+        return True
 
     def extract_tags(self, data: bytes) -> Tuple[List[Tuple[str, bool]], int]:
         """Default stub for tag extraction. Text parsers override this method.

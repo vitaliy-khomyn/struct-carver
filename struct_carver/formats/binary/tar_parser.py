@@ -9,6 +9,7 @@ from ..base import BaseBinaryParser
 class TARParser(BaseBinaryParser):
     """Parser for TAR format files."""
     ext = "tar"
+    header_offset = 257
 
     def __init__(self):
         """Initializes the parser state."""
@@ -22,8 +23,8 @@ class TARParser(BaseBinaryParser):
     def clone(self) -> 'TARParser':
         """Creates a clone of this parser with its current state.
 
-            Returns:
-                BaseFormatParser: Cloned parser instance.
+        Returns:
+            BaseFormatParser: Cloned parser instance.
         """
         new_parser = TARParser()
         new_parser.is_open = self.is_open
@@ -46,8 +47,8 @@ class TARParser(BaseBinaryParser):
     def state_tuple(self) -> tuple:
         """Returns a representation of the parser state for caching.
 
-            Returns:
-                tuple: Hashable parser state.
+        Returns:
+            tuple: Hashable parser state.
         """
         return (
             self.is_open,
@@ -62,44 +63,102 @@ class TARParser(BaseBinaryParser):
     def header_signatures(self) -> List[bytes]:
         """Gets the header signatures for this format.
 
-            Returns:
-                List[bytes]: Header signatures.
+        Returns:
+            List[bytes]: Header signatures.
         """
-        # commonly, TAR headers have 'ustar' at offset 257, but the header starts at offset 0.
-        # however, checking 'ustar' as signature requires finding 'ustar' and stepping back 257 bytes.
-        return [b'ustar']
+        # ustar indicator is at offset 257 of standard 512-byte TAR header blocks.
+        return [b'ustar\x00', b'ustar ', b'ustar']
 
     @property
     def footer_signatures(self) -> List[bytes]:
         """Gets the footer signatures for this format.
 
-            Returns:
-                List[bytes]: Footer signatures.
+        Returns:
+            List[bytes]: Footer signatures.
         """
         return []
+
+    def validate_header(self, data: bytes, offset: int = 0) -> bool:
+        """Validates candidate TAR header block at given offset in buffer.
+
+        Args:
+            data (bytes): Buffer containing candidate header.
+            offset (int, optional): Starting offset of the 512-byte header block (default: 0).
+
+        Returns:
+            bool: True if block contains valid TAR header metadata, False otherwise.
+        """
+        if offset < 0 or offset + 262 > len(data):
+            return False
+
+        # verify ustar signature at offset + 257
+        if data[offset + 257 : offset + 262] != b'ustar':
+            return False
+
+        # if full 512-byte header block is available, validate checksum and octal size
+        if offset + 512 <= len(data):
+            block = data[offset : offset + 512]
+
+            # validate checksum field if present
+            chksum_bytes = block[148:156].strip(b'\x00\x20')
+            if chksum_bytes:
+                try:
+                    expected_chksum = int(chksum_bytes, 8)
+                    unsigned_sum = sum(block[:148]) + (8 * 32) + sum(block[156:512])
+                    signed_sum = sum((b if b < 128 else b - 256) for b in block[:148]) + (8 * 32) + sum((b if b < 128 else b - 256) for b in block[156:512])
+                    if expected_chksum != unsigned_sum and expected_chksum != signed_sum:
+                        return False
+                except ValueError:
+                    return False
+
+            # validate octal size field
+            size_bytes = block[124:136].strip(b'\x00\x20')
+            if size_bytes:
+                try:
+                    file_size = int(size_bytes, 8)
+                    if file_size < 0 or file_size > 50 * 1024 * 1024 * 1024:
+                        return False
+                except ValueError:
+                    return False
+
+        return True
 
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check signature/structure boundaries.
 
-            Args:
-                data (bytes): Input data block.
-                bytes_remaining (int, optional): Bytes remaining from previous block.
+        Args:
+            data (bytes): Input data block.
+            bytes_remaining (int, optional): Bytes remaining from previous block.
 
-            Returns:
-                Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
+        Returns:
+            Tuple[bool, bool, int, int]: is_corrupted, is_complete, bytes_to_advance, bytes_remaining.
         """
         n = len(data)
         idx = 0
 
         if not self.is_open:
-            # find the 'ustar' signature which is at offset 257
-            ustar_idx = data.find(b'ustar')
-            if ustar_idx >= 257:
+            # check if data begins at offset 0 of TAR block (with ustar at offset 257)
+            if len(data) >= 262 and data[257:262] == b'ustar':
                 self.is_open = True
-                idx = ustar_idx - 257
-                self.current_offset = idx
+                idx = 0
+                self.current_offset = 0
             else:
-                return True, False, 0, 0
+                found = False
+                search_pos = 257
+                while search_pos + 5 <= n:
+                    pos = data.find(b'ustar', search_pos)
+                    if pos == -1:
+                        break
+                    start_candidate = pos - 257
+                    if self.validate_header(data, start_candidate):
+                        self.is_open = True
+                        idx = start_candidate
+                        self.current_offset = idx
+                        found = True
+                        break
+                    search_pos = pos + 1
+                if not found:
+                    return True, False, 0, 0
 
         # skip bytes requested from previous chunk
         if self.bytes_to_skip > 0:
@@ -131,6 +190,20 @@ class TARParser(BaseBinaryParser):
             else:
                 self.zero_blocks_seen = 0
 
+            # validate checksum field if populated
+            chksum_bytes = header_block[148:156].strip(b'\x00\x20')
+            if chksum_bytes:
+                try:
+                    expected_chksum = int(chksum_bytes, 8)
+                    unsigned_sum = sum(header_block[:148]) + (8 * 32) + sum(header_block[156:512])
+                    signed_sum = sum((b if b < 128 else b - 256) for b in header_block[:148]) + (8 * 32) + sum((b if b < 128 else b - 256) for b in header_block[156:512])
+                    if expected_chksum != unsigned_sum and expected_chksum != signed_sum:
+                        self.pending_header = bytearray()
+                        return True, False, 0, 0
+                except ValueError:
+                    self.pending_header = bytearray()
+                    return True, False, 0, 0
+
             # extract size field (octal size at offset 124, 12 bytes long)
             size_bytes = header_block[124:136].strip(b'\x00\x20')
             try:
@@ -143,7 +216,7 @@ class TARParser(BaseBinaryParser):
                 return True, False, 0, 0
 
             # sane size boundary checks
-            if file_size < 0 or file_size > 50 * 1024 * 1024 * 1024: # 50GB limit
+            if file_size < 0 or file_size > 50 * 1024 * 1024 * 1024:  # 50gb limit
                 self.pending_header = bytearray()
                 return True, False, 0, 0
 
@@ -167,3 +240,4 @@ class TARParser(BaseBinaryParser):
 
         self.current_offset = idx
         return False, False, n, 0
+

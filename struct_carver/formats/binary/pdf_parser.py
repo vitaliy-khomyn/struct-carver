@@ -24,9 +24,12 @@ class PDFParser(BaseBinaryParser):
     max_gap_clusters = 10000
 
     def __init__(self):
-        """Initializes the PDF parser state and length regex."""
+        """Initializes the PDF parser state and length regex patterns."""
         self.is_open = False
-        self.length_pattern = re.compile(rb'/Length\s+(\d+)')
+        # direct length pattern ensures integer is not part of an indirect object reference
+        self.direct_length_pattern = re.compile(rb'/Length\s+(\d+)\b(?!\s*\d+\s*R\b)')
+        self.indirect_length_pattern = re.compile(rb'/Length\s+\d+\s+\d+\s+R\b')
+        self.length_pattern = self.direct_length_pattern
         self.pending_endstream = False
         self.pending_bytes_needed = 0
         self.header_verified = False
@@ -94,6 +97,9 @@ class PDFParser(BaseBinaryParser):
         """
         if len(data) < 4:
             return True
+        # reject pure zero filler / unallocated clusters
+        if data == b'\x00' * len(data):
+            return False
         # reject clusters that start with a definite non-PDF file signature
         non_pdf_signatures = [
             b'\xFF\xD8\xFF',           # JPEG
@@ -194,14 +200,28 @@ class PDFParser(BaseBinaryParser):
                 bytes_remaining = 0
                 is_corr, remaining_data = self._validate_endstream(data_to_parse)
                 if is_corr:
-                    return True, False, 0, 0
-                data_to_parse = remaining_data
+                    # direct length did not align with endstream; fall back to searching for endstream
+                    end_stream_idx = data.find(b'endstream')
+                    eof_idx = data.lower().find(b'%%eof')
+                    if end_stream_idx != -1 and (eof_idx == -1 or end_stream_idx < eof_idx):
+                        data_to_parse = data[end_stream_idx + 9:]
+                        bytes_remaining = 0
+                    else:
+                        return True, False, 0, 0
+                else:
+                    data_to_parse = remaining_data
         elif bytes_remaining == -1:
             end_stream_idx = data.find(b'endstream')
+            eof_idx = data.lower().find(b'%%eof')
             if end_stream_idx != -1:
+                if eof_idx != -1 and end_stream_idx > eof_idx:
+                    return True, False, 0, 0
                 data_to_parse = data[end_stream_idx + 9:]
                 bytes_remaining = 0
             else:
+                if eof_idx != -1:
+                    # stream reached eof without endstream
+                    return True, False, 0, 0
                 # check for split endstream at the end of the chunk
                 found_split = False
                 for length in range(8, 0, -1):
@@ -216,17 +236,28 @@ class PDFParser(BaseBinaryParser):
         # find streams and calculate future byte offsets
         idx_stream = 0
         while idx_stream < len(data_to_parse):
-            match = re.search(rb'stream[\r\n]', data_to_parse[idx_stream:])
+            match = re.search(rb'(?<![a-zA-Z])stream[\r\n]', data_to_parse[idx_stream:])
             if not match:
                 break
 
             stream_idx = idx_stream + match.start()
             stream_start = idx_stream + match.end()
             pre_stream = data_to_parse[:stream_idx]
-            lengths = list(self.length_pattern.finditer(pre_stream))
 
-            if lengths:
-                length_val = int(lengths[-1].group(1))
+            # isolate the stream dictionary immediately preceding the stream keyword
+            dict_start = pre_stream.rfind(b'<<')
+            if dict_start == -1:
+                obj_start = pre_stream.rfind(b'obj')
+                stream_dict = pre_stream[obj_start:] if obj_start != -1 else pre_stream
+            else:
+                stream_dict = pre_stream[dict_start:]
+
+            # check if /Length is an indirect reference (e.g. /Length 12 0 R)
+            is_indirect = bool(self.indirect_length_pattern.search(stream_dict))
+            direct_match = None if is_indirect else self.direct_length_pattern.search(stream_dict)
+
+            if direct_match:
+                length_val = int(direct_match.group(1))
                 data_after_stream = len(data_to_parse) - stream_start
 
                 if data_after_stream < length_val:
@@ -235,22 +266,40 @@ class PDFParser(BaseBinaryParser):
                 else:
                     after_stream = data_to_parse[stream_start + length_val:]
                     is_corr, remaining_data = self._validate_endstream(after_stream)
-                    if is_corr:
-                        return True, False, 0, 0
-                    idx_stream = len(data_to_parse) - len(remaining_data)
+                    if not is_corr:
+                        idx_stream = len(data_to_parse) - len(remaining_data)
+                    else:
+                        # direct length mismatch; fall back to searching for endstream
+                        end_stream_idx = data_to_parse.find(b'endstream', stream_start)
+                        eof_idx = data_to_parse.lower().find(b'%%eof', stream_start)
+                        if end_stream_idx != -1 and (eof_idx == -1 or end_stream_idx < eof_idx):
+                            idx_stream = end_stream_idx + 9
+                        else:
+                            return True, False, 0, 0
             else:
-                # unknown length stream (indirect reference)
+                # unknown or indirect length stream
                 end_stream_idx = data_to_parse.find(b'endstream', stream_start)
+                eof_idx = data_to_parse.lower().find(b'%%eof', stream_start)
                 if end_stream_idx != -1:
+                    if eof_idx != -1 and end_stream_idx > eof_idx:
+                        return True, False, 0, 0
                     idx_stream = end_stream_idx + 9
                 else:
+                    if eof_idx != -1:
+                        # stream reached eof without endstream
+                        return True, False, 0, 0
                     bytes_remaining = -1
                     break
 
         if bytes_remaining == 0 and not self.pending_endstream:
             end_idx = data_to_parse.lower().find(b'%%eof', idx_stream)
             if end_idx != -1:
-                advance = len(data) - len(data_to_parse) + end_idx + 5
+                # consume optional trailing newline or whitespace after %%eof
+                post_eof = data_to_parse[end_idx + 5:]
+                trailing = 0
+                while trailing < len(post_eof) and post_eof[trailing:trailing+1] in (b'\r', b'\n', b' '):
+                    trailing += 1
+                advance = len(data) - len(data_to_parse) + end_idx + 5 + trailing
                 return False, True, advance, 0
 
         return False, False, len(data), bytes_remaining

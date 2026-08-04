@@ -491,8 +491,11 @@ class Carver:
                 carve_text_overlap = b""
                 report = {"files": []}
 
-                max_sig_len = max([len(sig) for parser in self.parsers for sig in parser.header_signatures], default=0)
-                overlap_size = max(0, max_sig_len - 1)
+                max_sig_window = max(
+                    [getattr(parser, 'header_offset', 0) + len(sig) for parser in self.parsers for sig in parser.header_signatures],
+                    default=0
+                )
+                overlap_size = max(0, max_sig_window - 1)
                 prev_overlap = b""
                 if start_offset > 0 and overlap_size > 0:
                     f.seek(start_offset - overlap_size)

@@ -60,7 +60,7 @@ class HeaderDetector:
                 control_count = sum(1 for b in stripped_cluster if b < 32 and b not in (9, 10, 13)) + stripped_cluster.count(127)
                 is_text_cluster = (1.0 - (control_count / len(stripped_cluster))) >= 0.95
 
-        best_idx = None
+        best_file_start = None
         best_parser = None
         best_is_binary = None
         best_sig_len = 0
@@ -72,34 +72,47 @@ class HeaderDetector:
                 continue
 
             target_buffer = search_buffer if is_binary else cluster_lower
+            hdr_offset = getattr(parser, 'header_offset', 0)
+
             for sig in parser.header_signatures:
                 sig_to_search = sig if is_binary else sig.lower()
-                idx = target_buffer.find(sig_to_search)
-                if idx != -1:
-                    if best_idx is None or idx < best_idx:
-                        best_idx = idx
-                        best_parser = parser
-                        best_is_binary = is_binary
-                        best_sig_len = len(sig)
-                    elif idx == best_idx:
-                        if len(sig) > best_sig_len:
-                            best_parser = parser
-                            best_is_binary = is_binary
-                            best_sig_len = len(sig)
+                search_pos = 0
+                while search_pos < len(target_buffer):
+                    idx = target_buffer.find(sig_to_search, search_pos)
+                    if idx == -1:
+                        break
+                    if idx >= hdr_offset:
+                        candidate_start = idx - hdr_offset
+                        # validate candidate header structure if parser implements validation
+                        if parser.validate_header(search_buffer, candidate_start):
+                            if best_file_start is None or candidate_start < best_file_start:
+                                best_file_start = candidate_start
+                                best_parser = parser
+                                best_is_binary = is_binary
+                                best_sig_len = len(sig)
+                            elif candidate_start == best_file_start:
+                                if len(sig) > best_sig_len:
+                                    best_file_start = candidate_start
+                                    best_parser = parser
+                                    best_is_binary = is_binary
+                                    best_sig_len = len(sig)
+                            break
+                    search_pos = idx + 1
 
-        if best_idx is not None:
+        if best_file_start is not None:
             best_parser.reset()
             if best_is_binary:
                 engine = BinaryOffsetEngine()
             else:
                 engine = StackEngine()
 
-            # slice the search buffer to begin exactly at the matching signature
-            search_buffer = search_buffer[best_idx:]
+            # slice the search buffer to begin exactly at the start of the file
+            search_buffer = search_buffer[best_file_start:]
 
             ext = self.registry.get_extension(best_parser)
             out_path = os.path.join(output_dir, f"carved_w{worker_id}_{file_id}.{ext}")
             handle = open(out_path, 'wb')
-            return True, best_parser, engine, handle, search_buffer, best_idx
+            return True, best_parser, engine, handle, search_buffer, best_file_start
 
         return False, None, None, None, cluster, -1
+
