@@ -103,7 +103,7 @@ class TestNewBinaryParsers(unittest.TestCase):
         hdr_guid = b'\x30\x26\xB2\x75\x8E\x66\xCF\x11\xA6\xD9\x00\xAA\x00\x62\xCE\x6C'
 
         # file Properties Object GUID + size 104 + client_id (16) + file_size (1000) + padding
-        fp_guid = b'\xA1\x5F\xC1\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
+        fp_guid = b'\xA1\xC1\x1F\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
         fp_obj = fp_guid + struct.pack('<Q', 104) + b'\x00' * 16 + struct.pack('<Q', 1000)
         fp_obj += b'\x00' * (104 - len(fp_obj))
 

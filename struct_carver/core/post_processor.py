@@ -100,31 +100,64 @@ class PostProcessor:
         """
         should_extract = self.extract_archives if extract_archives is None else extract_archives
 
-        if ext == "zip":
-            detected_ext = "zip"
+        # 1. ZIP-based container disambiguation (docx, xlsx, pptx, odt, ods, odp, epub, jar, apk)
+        if ext in ("zip", "docx", "xlsx", "pptx"):
+            detected_ext = ext
             try:
                 with zipfile.ZipFile(file_path, 'r') as zf:
                     namelist = zf.namelist()
-                    if "word/document.xml" in namelist:
-                        detected_ext = "docx"
-                    elif "xl/workbook.xml" in namelist:
-                        detected_ext = "xlsx"
-                    elif "ppt/presentation.xml" in namelist:
-                        detected_ext = "pptx"
+                    # check [Content_Types].xml if present
+                    if "[Content_Types].xml" in namelist:
+                        try:
+                            ct_content = zf.read("[Content_Types].xml").lower()
+                            if b'wordprocessingml' in ct_content:
+                                detected_ext = "docx"
+                            elif b'spreadsheetml' in ct_content:
+                                detected_ext = "xlsx"
+                            elif b'presentationml' in ct_content:
+                                detected_ext = "pptx"
+                        except (KeyError, zipfile.BadZipFile):
+                            pass
+
+                    # fallback to path conventions if not resolved
+                    if detected_ext in ("zip", ext):
+                        if any(name.startswith("word/") for name in namelist) or "word/document.xml" in namelist:
+                            detected_ext = "docx"
+                        elif any(name.startswith("xl/") for name in namelist) or "xl/workbook.xml" in namelist:
+                            detected_ext = "xlsx"
+                        elif any(name.startswith("ppt/") for name in namelist) or "ppt/presentation.xml" in namelist:
+                            detected_ext = "pptx"
+                        elif "mimetype" in namelist:
+                            try:
+                                mime = zf.read("mimetype").strip().lower()
+                                if b'opendocument.text' in mime:
+                                    detected_ext = "odt"
+                                elif b'opendocument.spreadsheet' in mime:
+                                    detected_ext = "ods"
+                                elif b'opendocument.presentation' in mime:
+                                    detected_ext = "odp"
+                                elif b'epub+zip' in mime:
+                                    detected_ext = "epub"
+                            except (KeyError, zipfile.BadZipFile):
+                                pass
+                        elif "META-INF/MANIFEST.MF" in namelist:
+                            detected_ext = "jar"
+                        elif "AndroidManifest.xml" in namelist:
+                            detected_ext = "apk"
             except (zipfile.BadZipFile, OSError, KeyError) as e:
-                logger.error(f"Failed to read ZIP structure for Office detection: {e}")
+                logger.debug(f"Failed to read ZIP structure for container disambiguation: {e}")
                 return ext, filename
 
-            if detected_ext != "zip":
+            if detected_ext != ext:
                 new_filename = filename.rsplit('.', 1)[0] + f".{detected_ext}"
                 new_path = os.path.join(output_dir, new_filename)
                 try:
                     if os.path.exists(file_path):
                         os.rename(file_path, new_path)
-                    logger.info(f"Detected Office document. Renamed {filename} to {new_filename}")
+                    logger.info(f"Disambiguated ZIP container. Renamed {filename} to {new_filename}")
                     return detected_ext, new_filename
                 except OSError as e:
-                    logger.error(f"Failed to rename Office document: {e}")
+                    logger.error(f"Failed to rename container document: {e}")
             elif should_extract:
                 zip_out_dir = f"{file_path}_extracted"
                 try:
@@ -134,4 +167,71 @@ class PostProcessor:
                         logger.info(f"Safely extracted ZIP contents to {zip_out_dir}")
                 except (zipfile.BadZipFile, OSError, RuntimeError) as e:
                     logger.error(f"Recovered ZIP extraction failed: {e}")
+
+        # 2. RIFF container disambiguation (wav vs avi)
+        elif ext in ("wav", "avi"):
+            try:
+                with open(file_path, 'rb') as f:
+                    hdr = f.read(12)
+                if len(hdr) >= 12 and hdr[:4] == b'RIFF':
+                    fourcc = hdr[8:12]
+                    detected_ext = ext
+                    if fourcc == b'AVI ' and ext != "avi":
+                        detected_ext = "avi"
+                    elif fourcc == b'WAVE' and ext != "wav":
+                        detected_ext = "wav"
+                    if detected_ext != ext:
+                        new_filename = filename.rsplit('.', 1)[0] + f".{detected_ext}"
+                        new_path = os.path.join(output_dir, new_filename)
+                        if os.path.exists(file_path):
+                            os.rename(file_path, new_path)
+                        logger.info(f"Disambiguated RIFF container ({fourcc.decode('latin1', errors='replace')}). Renamed {filename} to {new_filename}")
+                        return detected_ext, new_filename
+            except OSError as e:
+                logger.debug(f"RIFF post-process inspection failed: {e}")
+
+        # 3. ASF container disambiguation (wma vs wmv)
+        elif ext in ("wma", "wmv"):
+            try:
+                with open(file_path, 'rb') as f:
+                    header_sample = f.read(65536)
+                video_stream_guid = b'\xC0\xEF\x19\xBC\x4D\x5B\xCF\x11\xA8\xFD\x00\x80\x5F\x5C\x44\x2B'
+                detected_ext = "wmv" if video_stream_guid in header_sample else "wma"
+                if detected_ext != ext:
+                    new_filename = filename.rsplit('.', 1)[0] + f".{detected_ext}"
+                    new_path = os.path.join(output_dir, new_filename)
+                    if os.path.exists(file_path):
+                        os.rename(file_path, new_path)
+                    logger.info(f"Disambiguated ASF container. Renamed {filename} to {new_filename}")
+                    return detected_ext, new_filename
+            except OSError as e:
+                logger.debug(f"ASF post-process inspection failed: {e}")
+
+        # 4. ISO BMFF / QuickTime Box container disambiguation (mp4 vs mov)
+        elif ext in ("mp4", "mov"):
+            try:
+                with open(file_path, 'rb') as f:
+                    box_sample = f.read(64)
+                detected_ext = ext
+                if len(box_sample) >= 8:
+                    box_type = box_sample[4:8]
+                    if box_type == b'ftyp' and len(box_sample) >= 12:
+                        brand = box_sample[8:12]
+                        if brand == b'qt  ':
+                            detected_ext = "mov"
+                        else:
+                            detected_ext = "mp4"
+                    elif box_type in (b'moov', b'wide', b'free', b'mdat'):
+                        detected_ext = "mov"
+                if detected_ext != ext:
+                    new_filename = filename.rsplit('.', 1)[0] + f".{detected_ext}"
+                    new_path = os.path.join(output_dir, new_filename)
+                    if os.path.exists(file_path):
+                        os.rename(file_path, new_path)
+                    logger.info(f"Disambiguated Box container. Renamed {filename} to {new_filename}")
+                    return detected_ext, new_filename
+            except OSError as e:
+                logger.debug(f"Box post-process inspection failed: {e}")
+
         return ext, filename
+

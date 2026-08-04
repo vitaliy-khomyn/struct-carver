@@ -154,9 +154,11 @@ class ParserRegistry:
 
         expanded_formats = expand_format_categories(formats)
 
+        seen_classes = set()
         for fmt in expanded_formats:
             parser_class = AVAILABLE_PARSERS.get(fmt.lower())
-            if parser_class:
+            if parser_class and parser_class not in seen_classes:
+                seen_classes.add(parser_class)
                 self.parsers.append(parser_class())
 
         if custom_parsers:

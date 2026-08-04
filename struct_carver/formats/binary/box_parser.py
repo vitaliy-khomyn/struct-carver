@@ -14,6 +14,7 @@ class BaseBoxParser(BaseBinaryParser):
 
     Attributes:
         ext (str): Format extension string.
+        header_offset (int): Signature offset for box types (4 bytes after size).
         initial_box_types (Tuple[bytes, ...]): Accepted FourCC box types at file start.
         is_open (bool): True if currently processing an active file stream.
         total_size (int): Running accumulated total size.
@@ -25,6 +26,7 @@ class BaseBoxParser(BaseBinaryParser):
     """
 
     ext: str = ""
+    header_offset: int = 4
     initial_box_types: Tuple[bytes, ...] = (b'ftyp', b'moov')
 
     def __init__(self):
@@ -87,6 +89,26 @@ class BaseBoxParser(BaseBinaryParser):
             List[bytes]: Footer signatures.
         """
         return []
+
+    def validate_header(self, data: bytes, offset: int = 0) -> bool:
+        """Validates candidate Box container header.
+
+        Args:
+            data (bytes): Buffer containing candidate header.
+            offset (int, optional): Starting offset of the file in data (default: 0).
+
+        Returns:
+            bool: True if box size and box type match initial expected types, False otherwise.
+        """
+        if offset < 0 or offset + 8 > len(data):
+            return False
+        box_size = struct.unpack('>I', data[offset : offset + 4])[0]
+        if box_size not in (0, 1) and (box_size < 8 or box_size > 10 * 1024 * 1024 * 1024):
+            return False
+        box_type = data[offset + 4 : offset + 8]
+        if box_type not in self.initial_box_types:
+            return False
+        return True
 
     def _is_valid_box_type(self, box_type: bytes) -> bool:
         """Checks if the box type consists of 4 printable alphanumeric ASCII characters or spaces.

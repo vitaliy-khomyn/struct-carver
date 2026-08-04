@@ -87,6 +87,24 @@ class BaseRIFFParser(BaseBinaryParser):
         """
         return []
 
+    def validate_header(self, data: bytes, offset: int = 0) -> bool:
+        """Validates candidate RIFF header and FourCC format tag.
+
+        Args:
+            data (bytes): Buffer containing candidate header.
+            offset (int, optional): Starting offset of the file in data (default: 0).
+
+        Returns:
+            bool: True if RIFF signature and FourCC tag match, False otherwise.
+        """
+        if offset < 0 or offset + 12 > len(data):
+            return False
+        if data[offset : offset + 4] != b'RIFF':
+            return False
+        if self.riff_tag and data[offset + 8 : offset + 12] != self.riff_tag:
+            return False
+        return True
+
     def analyze_binary(self, data: bytes, bytes_remaining: int = 0) -> Tuple[bool, bool, int, int]:
         """Analyzes a binary data block to check RIFF container boundaries.
 

@@ -88,6 +88,26 @@ class BaseASFParser(BaseBinaryParser):
         """
         return []
 
+    def validate_header(self, data: bytes, offset: int = 0) -> bool:
+        """Validates candidate ASF container header.
+
+        Args:
+            data (bytes): Buffer containing candidate header.
+            offset (int, optional): Starting offset of the file in data (default: 0).
+
+        Returns:
+            bool: True if ASF header GUID and basic structure match, False otherwise.
+        """
+        asf_guid = b'\x30\x26\xB2\x75\x8E\x66\xCF\x11\xA6\xD9\x00\xAA\x00\x62\xCE\x6C'
+        if offset < 0 or offset + 24 > len(data):
+            return False
+        if data[offset : offset + 16] != asf_guid:
+            return False
+        hdr_size = struct.unpack('<Q', data[offset + 16 : offset + 24])[0]
+        if hdr_size < 30 or hdr_size > 50 * 1024 * 1024:
+            return False
+        return True
+
     def _verify_header_payload(self, header_data: bytes) -> bool:
         """Subclass hook to validate format-specific stream GUIDs within the ASF header.
 
@@ -141,7 +161,8 @@ class BaseASFParser(BaseBinaryParser):
                     return False, False, n, self.header_size - len(self.pending_header)
 
             # accumulate done, verify File Properties Object GUID
-            fp_guid = b'\xA1\x5F\xC1\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
+            # ASF_File_Properties_Object GUID: 8C1FC1A1-854F-11D0-ACB0-00A0C90349BE
+            fp_guid = b'\xA1\xC1\x1F\x8C\x4F\x85\xD0\x11\xAC\xB0\x00\xA0\xC9\x03\x49\xBE'
             fp_idx = self.pending_header.find(fp_guid, 24)
             if fp_idx == -1 or fp_idx + 104 > self.header_size:
                 return True, False, 0, 0
